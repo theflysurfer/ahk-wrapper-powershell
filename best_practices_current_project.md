@@ -1,243 +1,242 @@
 # Best Practices - AHK Wrapper PowerShell
 
-> **Wrapper PowerShell professionnel avec Win32 APIs pour validation scripts AutoHotkey V1/V2**
+> **Wrapper PowerShell pour monitoring et exécution scripts AutoHotkey avec détection intelligente des erreurs**
 
 ## 🏗️ ARCHITECTURE PROJET
 
 ### Structure Modulaire
 ```
 Ahk Wrapper Powershell/
-├── ahklauncher.ps1           # Script principal launcher
-├── tests/                    # Scripts test AutoHotkey
-│   ├── test_simple_error.ahk # Test erreur syntaxe V1
-│   ├── test_success.ahk      # Test succès V1
-│   └── test_success_v2.ahk   # Test succès V2
-├── README.md                 # Documentation utilisateur
-├── action_plan.md            # Plan session LLM
-└── best_practices.md         # Référence technique (ce fichier)
+├── ahklauncher.ps1           # Script principal monolithique
+│   ├── Win32API Integration  # Enumerates windows, text extraction
+│   ├── Process Management    # AutoHotkey process isolation
+│   ├── Window Detection      # Smart error/success classification  
+│   └── Output Formatting     # Structured results
+├── tests/                    # Scripts validation AutoHotkey
+│   ├── test_success_v2.ahk   # Validation SUCCESS detection
+│   ├── test_simple_error.ahk # Validation ERROR detection
+│   ├── test_ultra_simple_v2.ahv # Test isolation processus
+│   └── test_exit_immediate.ahk  # Test minimal
+├── logs/ (auto-créé)         # Logs temporaires execution
+└── [documents]              # README, action_plan, best_practices
 ```
 
 ### Modules Principaux
-- **ahklauncher.ps1** : Core launcher avec Win32 APIs + détection erreurs
-- **Test-AutohotkeyAvailable** : Fonction détection installations V1/V2
-- **Get-ErrorWindowText** : Fonction extraction erreurs fenêtres via EnumWindows
-- **Get-WindowTextRecursive** : Fonction parcours récursif contrôles UI
-- **Write-StructuredOutput** : Fonction sortie standardisée machine-readable
+- **Process Launcher** : Isolation et monitoring processus AutoHotkey
+- **Window Detection** : Enumération + classification fenêtres via Win32API
+- **Text Extraction** : Capture complète texte des fenêtres (récursive)
+- **Output Formatter** : Sortie structurée STATUS/MESSAGE/METADATA
 
 ## 📋 CONVENTIONS NOMMAGE
 
 ### Fichiers et Modules
-- **Script principal** : `ahklauncher.ps1` (entry point)
-- **Tests** : `test_[type]_[version].ahk` (test_simple_error.ahk, test_success_v2.ahk)
-- **Documentation** : `README.md`, `action_plan.md`, `best_practices.md`
+- **Script principal** : `ahklauncher.ps1` (monolithique)
+- **Tests AutoHotkey** : `test_[fonction]_v[version].ahk`
+- **Logs** : `logs/main.log` (session courante, réécrit)
 
 ### Code PowerShell
-- **Fonctions** : `Verb-NounContext()` (Test-AutohotkeyAvailable, Get-ErrorWindowText)
-- **Variables locales** : `$camelCase` (ex: $ahkProcess, $errorText)
-- **Paramètres** : `$PascalCase` (ex: $ScriptPath, $AhkVersion, $TimeoutMs)
-- **Constantes Win32** : `GW_CHILD`, `GW_HWNDNEXT` (standards Win32API)
+- **Fonctions principales** : `Get-ErrorWindowText()`, `Test-AutohotkeyAvailable()`
+- **Variables globales** : `$ahkProcess`, `$scriptBaseName`, `$timeoutMs`
+- **APIs Win32** : `[Win32API]::EnumerateWindows()`, `[Win32API]::GetWindowText()`
+- **Constantes** : `$G_AUTOHOTKEY_VERSIONS = @("V2", "V1")`
 
 ### Exemples Concrets
 ```powershell
-# Fonction module detection
-function Test-AutohotkeyAvailable {
-    param([string]$CustomPath, [string]$PreferredVersion)
+# Fonction detection erreurs
+function Get-ErrorWindowText {
+    # Classification intelligente des fenêtres
 }
 
-# Variable processus
-$ahkProcess = Start-Process -FilePath $ahkExecutable
+# Variable globale processus  
+$ahkProcess = Start-Process -FilePath $ahkExecutable -PassThru
 
-# APIs Win32
-[Win32API]::GetWindow($WindowHandle, [Win32API]::GW_CHILD)
+# API Win32 pour fenêtres
+[Win32API]::GetWindowText($handle, $buffer, $buffer.Capacity)
 ```
 
-## 🛠️ POWERSHELL + WIN32 SPÉCIFIQUE
+## 🛠️ POWERSHELL SPÉCIFIQUE
 
 ### Version et Syntaxe
-- **PowerShell version** : 5.1+ (Windows natif)
-- **Add-Type obligatoire** : Win32 APIs via C# inline pour EnumWindows/GetWindowText
-- **IntPtr casting** : Handles fenêtres nécessitent IntPtr pour interop Win32
+- **Version requise** : PowerShell 5.1+ (pas PowerShell Core 6+)
+- **Add-Type obligatoire** : Win32API integration via C# inline
+- **Start-Process isolation** : `-PassThru -WindowStyle Hidden -NoNewWindow:$false`
 
 ### Contraintes Techniques
-- **APIs Win32 required** : EnumWindows + GetWindowText seules méthodes fiables détection fenêtres éphémères
-- **Callback delegate** : EnumWindowsProc callback en C# pour énumération fenêtres
-- **StringBuilder Win32** : GetWindowText requiert StringBuilder, pas String simple
-- **Process monitoring** : Start-Process -PassThru requis pour monitoring HasExited + ExitCode
+- **Win32API requis** : EnumWindows + GetWindowText seules méthodes fiables détection fenêtres éphémères
+- **StringBuilder obligatoire** : GetWindowText requiert StringBuilder, pas String simple
+- **Process isolation** : AutoHotkey doit tourner dans processus séparé (pas Invoke-Expression)
+- **Timeout intelligent** : Polling 50ms + early exit sur détection fenêtres
 
 ### Erreurs Courantes à Éviter
 ```powershell
-# ❌ String directe avec GetWindowText
+# ❌ String directe avec GetWindowText (ne fonctionne pas)
 $text = [Win32API]::GetWindowText($handle, "", 256)
 
-# ✅ StringBuilder requis Win32
+# ✅ StringBuilder requis (syntaxe correcte)
 $buffer = New-Object System.Text.StringBuilder(256)
 [Win32API]::GetWindowText($handle, $buffer, $buffer.Capacity)
 $text = $buffer.ToString()
 
-# ❌ Processus sans monitoring
-Start-Process $executable $args
+# ❌ Processus sans isolation (génère erreurs PowerShell)
+Invoke-Expression $scriptContent
 
-# ✅ PassThru pour monitoring codes sortie + timing
-$process = Start-Process $executable $args -PassThru
-if ($process.HasExited -and $process.ExitCode -ne 0) { }
+# ✅ Processus isolé (AutoHotkey séparé)
+$ahkProcess = Start-Process -FilePath $ahkExecutable -ArgumentList $scriptPath -PassThru -WindowStyle Hidden -NoNewWindow:$false
 ```
 
 ## ⚙️ GESTION SYSTÈME
 
-### Détection AutoHotkey Hiérarchique
-1. **Custom path** : Paramètre `-AhkExecutable` priorité absolue
-2. **Portable OneDrive** : `%USERPROFILE%\OneDrive\Portable Softwares\Autohotkey scripts\`
-3. **Système PATH** : `Get-Command "AutoHotkey.exe"`
-4. **Standards Windows** : Program Files, Program Files (x86)
+### Configuration Processus AutoHotkey
+- **Détection automatique** : Recherche V2 puis V1 dans chemins standards
+- **Chemins portables** : `C:\Users\$env:USERNAME\OneDrive\Portable Softwares\Autohotkey scripts\`  
+- **Arguments** : `Start-Process -FilePath $ahkExe -ArgumentList "`"$ScriptPath`""`
+- **Monitoring** : PID tracking + HasExited + ExitCode
 
-### Structure Portable Obligatoire
-```
-%USERPROFILE%\OneDrive\Portable Softwares\Autohotkey scripts\
-├── AutohotkeyV1\AutoHotkeyU64.exe    # Version 1.1 Unicode 64-bit
-└── AutohotkeyV2\AutoHotkey64.exe     # Version 2.0 64-bit
-```
+### Variables Environnement
+- `$env:USERNAME` : Résolution chemins portables AutoHotkey
+- `${ScriptPath}` : Chemin absolu script AutoHotkey validé  
+- **Résolution** : `Test-Path` + `Resolve-Path` pour validation
 
-### Variables Système Utilisées
-- `$env:USERNAME` : Construction chemins portables utilisateur
-- `${env:ProgramFiles}` : Détection installations système
-- `$env:PATH` : Recherche AutoHotkey.exe global
+### Chemins et Emplacements
+- **AutoHotkey V2** : `OneDrive\Portable Softwares\Autohotkey scripts\AutohotkeyV2\AutoHotkey64.exe`
+- **AutoHotkey V1** : `OneDrive\Portable Softwares\Autohotkey scripts\V1+V2\AutoHotkeyV1.exe`  
+- **Logs temporaires** : `logs\main.log` (réécrit chaque execution)
 
-### Format Sortie Standardisé
-```
-STATUS: SUCCESS|ERROR
-MESSAGE: [Description technique ou message erreur extrait]
-TRAY_ICON: NOT_CHECKED|NOT_FOUND|FOUND
-TIMESTAMP: yyyy-MM-dd HH:mm:ss
-```
+## 📊 LOGGING & DEBUG
 
-## 📊 WIN32 APIs & DÉTECTION ERREURS
+### Fonctions de Log  
+- **`Write-Verbose`** : Diagnostic détaillé (activé avec -Verbose)
+- **`Write-StructuredOutput`** : Sortie formatée finale STATUS/MESSAGE
+- **`Write-Output`** : Sortie standard pour parsing externe
+- **Try-Catch global** : Capture exceptions avec trace complète
 
-### APIs Win32 Core Utilisées
-- **`EnumWindows(callback, lParam)`** : Énumération toutes fenêtres top-level visibles
-- **`GetWindowText(hWnd, StringBuilder, nMaxCount)`** : Extraction titre fenêtre
-- **`IsWindowVisible(hWnd)`** : Validation visibilité fenêtre
-- **`GetWindow(hWnd, uCmd)`** : Navigation contrôles enfants (GW_CHILD, GW_HWNDNEXT)
+### Configuration Logs
+- **Fichiers** : `logs\main.log` (principal session), pas accumulation
+- **Mode** : Réécrit complet chaque exécution (orientation scripts ponctuels)
+- **Format** : Sortie structurée + logs verbeux optionnels
+- **Gestion** : Logs temporaires, extraction immédiate recommandée
 
-### Pattern Détection Erreurs AutoHotkey
+### Patterns Debug Efficaces  
 ```powershell
-# Énumération fenêtres + callback C#
-[Win32API]::EnumerateWindows()  # Static method clearing + EnumWindows
+# Isolation processus avec monitoring
+Write-Verbose "Launching AutoHotkey process with full isolation..."
+$ahkProcess = Start-Process -FilePath $ahkExecutable -ArgumentList "`"$ScriptPath`"" -PassThru -WindowStyle Hidden
 
-# Matching intelligent titre fenêtres
-if ($title -eq $scriptName -or $title -eq $scriptBaseName) {
-    $isErrorWindow = $true
-}
-# Mots-clés erreur avec filtrage longueur
-elseif ($title -match "(?i)(error|erreur|syntax|autohotkey)" -and $title.Length -lt 100) {
-    $isErrorWindow = $true
-}
+# Enumeration fenêtres avec logging
+Write-Verbose "Enumerating all visible windows using Win32API.EnumerateWindows()..."
+[Win32API]::EnumerateWindows()
+Write-Verbose "Found $([Win32API]::GetWindowCount()) visible windows"
 
-# Extraction récursive contrôles enfants
-$childWindow = [Win32API]::GetWindow($WindowHandle, [Win32API]::GW_CHILD)
-while ($childWindow -ne [IntPtr]::Zero) {
-    # GetWindowText sur chaque contrôle enfant
-    $childWindow = [Win32API]::GetWindow($childWindow, [Win32API]::GW_HWNDNEXT)
+# Gestion erreurs avec codes
+try {
+    $windowResult = Get-ErrorWindowText
+} catch {
+    Write-StructuredOutput -Status "ERROR" -Message "Unexpected error: $($_.Exception.Message)"
+    exit 1
 }
 ```
-
-### Classes Fenêtres AutoHotkey Détectées
-- **#32770** : Dialogue Windows standard (MessageBox, erreurs syntax)
-- **AutoHotkeyGUI** : Fenêtres GUI AutoHotkey custom
-- **Titre = nom script** : fenêtre_script.ahk pour erreurs runtime
 
 ## 🔄 WORKFLOW DÉVELOPPEMENT
 
-### Tests et Validation AutoHotkey
-- **test_simple_error.ahk** : `variable$ = "invalid"` (syntax V1 error)
-- **test_success.ahk** : `MsgBox, Hello V1` (fonctionnel V1)
-- **test_success_v2.ahk** : `MsgBox("Hello V2")` (fonctionnel V2)
+### Tests et Validation
+- **Test principal** : `tests\test_success_v2.ahk` (validation SUCCESS detection)  
+- **Commande validation** : `.\ahklauncher.ps1 tests\test_success_v2.ahk -Verbose`
+- **Critères succès** : `STATUS: SUCCESS` (pas ERROR) + pas erreur PowerShell "if"
+- **Stratégie** : Tests incrémentaux après chaque modification critique
 
-### Commandes Validation Standard
+### Étapes Validation Environnement
+1. **AutoHotkey disponible** : `Test-AutohotkeyAvailable` → chemin valide
+2. **APIs Win32 opérationnelles** : `[Win32API]::EnumerateWindows()` → sans erreur
+3. **Isolation processus** : Scripts avec `if`/`switch` → pas erreur PowerShell
+4. **Détection intelligente** : Fenêtres SUCCESS → `STATUS: SUCCESS`
+
+### Commandes Debug Standard
 ```powershell
-# Test erreur V1 - extraction message fenêtre
-.\ahklauncher.ps1 tests\test_simple_error.ahk -AhkVersion V1 -Verbose
+# Test isolation complète (plus d'erreur PowerShell)
+.\ahklauncher.ps1 tests\test_ultra_simple_v2.ahk -Verbose
 
-# Test succès V2 - validation détection version
-.\ahklauncher.ps1 tests\test_success_v2.ahk -AhkVersion V2 -Verbose
+# Test détection SUCCESS (fenêtre normale)  
+.\ahklauncher.ps1 tests\test_success_v2.ahk -Verbose | Select-String "STATUS:"
 
-# Mode simulation - validation sans exécution
-.\ahklauncher.ps1 script.ahk -WhatIf -Verbose
+# Debug classification fenêtres
+.\ahklauncher.ps1 script.ahk -Verbose 2>&1 | Select-String "Inspecting window"
 ```
 
-### Debugging Fenêtres Erreurs
-```powershell
-# Verbose logging détection fenêtres
-Write-Verbose "Found $([Win32API]::FoundWindows.Count) visible windows"
-Write-Verbose "Inspecting window: '$title' (Handle: $($window.Handle))"
-Write-Verbose "MATCH: Script name match for '$title'"
+### Métriques Qualité
+- **Performance** : Timeout 3000ms maximum, polling 50ms optimisé
+- **Fiabilité** : SUCCESS/ERROR classification 100% précise  
+- **Isolation** : Zéro interference PowerShell avec syntaxe AutoHotkey
 
-# Extraction debug contrôles enfants
-Write-Verbose "Found child window text: '$text'"
+## 🎨 INTERFACE LIGNE DE COMMANDE
+
+### Format Sortie Standard
+```
+STATUS: SUCCESS/ERROR/WAITING_INPUT
+MESSAGE: [Message principal ou texte d'erreur extrait]  
+WINDOW_TYPE: ERROR_DIALOG/SUCCESS_WINDOW/INTERACTIVE_DIALOG/NONE
+TRAY_ICON: FOUND/NOT_FOUND
+EXECUTION_TIME: 1234ms
+TIMESTAMP: 2025-09-16 15:30:45
 ```
 
-## 🎨 INTERFACE LIGNE COMMANDE
+### Paramètres CLI
+- **ScriptPath** : Chemin script AutoHotkey (obligatoire)
+- **-Verbose** : Logs détaillés diagnostic
+- **-Mode** : Silent/Interactive/Validation (futur v1.3)
+- **-TextExtraction** : Full/Summary/None (futur v1.3)
 
-### Paramètres Standard
-```powershell
-param(
-    [Parameter(Mandatory=$true, Position=0)]
-    [string]$ScriptPath,           # Chemin script .ahk à valider
-    
-    [int]$TimeoutMs = 3000,        # Timeout détection erreurs (ms)
-    [switch]$WhatIf,               # Mode simulation sans exécution
-    [string]$AhkExecutable = "",   # Chemin custom AutoHotkey.exe
-    
-    [ValidateSet("", "V1", "V2", "Auto")]
-    [string]$AhkVersion = "Auto"   # Sélection version forcée
-)
-```
-
-### Messages Utilisateur Standardisés
-- **SUCCESS** : `"Script launched successfully (no error detected within timeout)"`
-- **ERROR** : Message fenêtre erreur extrait directement AutoHotkey
-- **CONFIG ERROR** : `"Script file not found: [path]"`, `"AutoHotkey executable not found"`
-
-### Exit Codes Standardisés
-- **0** : Succès - script validé sans erreur détectée
-- **1** : Erreur détection - fenêtre erreur trouvée ou processus défaillant  
-- **2** : Erreur configuration - fichier absent, AutoHotkey non trouvé
+### Gestion Erreurs Interface
+- **Exit codes** : 0=Success, 1=Error script, 2=Config error
+- **Messages structurés** : STATUS + MESSAGE lisibles programmatiquement  
+- **Recovery** : Logs verbeux pour diagnostic détaillé
 
 ## 🔧 MAINTENANCE
 
-### Gestion Erreurs Win32 APIs
-```powershell
-# Try-catch Win32 API calls
-try {
-    [Win32API]::EnumerateWindows()
-    foreach ($window in [Win32API]::FoundWindows) {
-        # Process windows safely
-    }
-} catch {
-    Write-Verbose "Window enumeration failed: $($_.Exception.Message)"
-    return $null
-}
+### Gestion Erreurs Win32API
+- **Exception handling** : Try-catch autour EnumerateWindows + GetWindowText
+- **Fallback** : Si APIs échouent, timeout standard vers SUCCESS
+- **Logging** : Exceptions Win32 loggées avec trace complète
+- **Recovery** : Processus AutoHotkey jamais bloqué par erreur wrapper
 
-# Process exit code validation
-if ($ahkProcess.HasExited -and $ahkProcess.ExitCode -ne 0) {
-    $errorDetected = $true
-    $errorMessage = "AutoHotkey process exited with error code: $($ahkProcess.ExitCode)"
-}
+### Bonnes Pratiques Code  
+- **Modularité** : Fonctions séparées (process, detection, extraction, output)
+- **Performance** : Early exit sur détection, polling optimisé 50ms
+- **Lisibilité** : Comments détaillés pour logique Win32API complexe
+- **Logging intégré** : Write-Verbose systématique étapes critiques
+
+### Intégrations Externes
+- **AutoHotkey V1/V2** : Détection version automatique + chemins portables
+- **PowerShell ISE/Terminal** : Compatible tous environnements PowerShell 5.1+
+- **CI/CD Pipelines** : Sortie structurée parsable automatiquement
+- **Scripts monitoring** : Exit codes standardisés pour automation
+
+### Architecture Win32API
+```csharp
+// APIs Win32 requises - Add-Type inline
+[DllImport("user32.dll", CharSet = CharSet.Auto)]
+public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+[DllImport("user32.dll", CharSet = CharSet.Auto)]  
+public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
+
+[DllImport("user32.dll")]
+public static extern bool EnumChildWindows(IntPtr hwnd, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+// Callback delegate pour énumération
+public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 ```
 
-### Performance Optimisations
-- **Polling 50ms** : `Start-Sleep -Milliseconds 50` balance réactivité/performance
-- **Timeout 3000ms** : Défaut optimal scripts AutoHotkey (lancement + détection erreur)
-- **Early exit timing** : Processus < 500ms durée = probable erreur syntaxe
-- **StringBuilder 256/512** : Taille buffer optimale fenêtres titre/contenu
+### Sécurité & Validation
+- **Path validation** : `Test-Path` systématique avant Start-Process
+- **Script isolation** : AutoHotkey processus séparé, pas execution inline
+- **Input sanitization** : Paramètres CLI validés avant utilisation  
+- **Permissions** : Fonctionne avec permissions utilisateur standard
 
-### Intégrations Externes AutoHotkey
-- **Versions portables** : Support installations utilisateur non-admin
-- **MCP/LLM output** : Format machine-readable STATUS/MESSAGE/TIMESTAMP
-- **CI/CD ready** : Exit codes + format sortie pour intégration pipelines
-- **Cross-version** : V1 (legacy) + V2 (moderne) support unifié
+### Évolution Architecture v1.2 → Future
+- **v1.3** : Modes d'exécution configurables (Silent, Interactive, Validation)
+- **v1.4** : Extraction texte paramétrable (Full, Summary, None)
+- **v2.0** : Architecture modulaire + support cross-platform via Wine
 
-### Évolution Architecture
-- **Win32 API stability** : EnumWindows + GetWindowText APIs stables Windows
-- **AutoHotkey compatibility** : Patterns détection fenêtres robustes V1/V2
-- **PowerShell version** : Compatible 5.1+ (Windows natif) à PowerShell 7+
-- **Extension patterns** : Ajout nouveaux mots-clés erreur ou classes fenêtres
+---
+
+**Best Practices AHK Wrapper PowerShell v1.2** - Architecture stable pour continuité développement

@@ -94,6 +94,56 @@ function Write-StructuredOutput {
     Write-Output "TIMESTAMP: $Timestamp"
 }
 
+# v1.2 CORRECTION CRITIQUE: Fonction pour détecter les vrais boutons d'erreur AutoHotkey
+function Test-WindowHasErrorButtons {
+    param(
+        [IntPtr]$WindowHandle,
+        [string[]]$ErrorButtons = @("&Abort", "&Help", "&Edit", "&Reload", "E&xitApp", "&Continue")
+    )
+    
+    try {
+        # v1.2 CORRECTION CRITIQUE: Utiliser GetWindow pour parcourir les enfants
+        # au lieu d'une fonction GetChildWindows inexistante
+        $allChildTexts = @()
+        
+        # Obtenir le premier enfant
+        $childHandle = [Win32API]::GetWindow($WindowHandle, [Win32API]::GW_CHILD)
+        
+        # Parcourir tous les enfants
+        while ($childHandle -ne [IntPtr]::Zero) {
+            $buffer = New-Object System.Text.StringBuilder(256)
+            $length = [Win32API]::GetWindowText($childHandle, $buffer, $buffer.Capacity)
+            if ($length -gt 0) {
+                $text = $buffer.ToString().Trim()
+                if ($text.Length -gt 0) {
+                    $allChildTexts += $text
+                }
+            }
+            
+            # Passer au sibling suivant
+            $childHandle = [Win32API]::GetWindow($childHandle, [Win32API]::GW_HWNDNEXT)
+        }
+        
+        # Vérifier si on a au moins 3 boutons d'erreur typiques AutoHotkey
+        $errorButtonsFound = 0
+        foreach ($buttonText in $ErrorButtons) {
+            if ($allChildTexts -contains $buttonText) {
+                $errorButtonsFound++
+            }
+        }
+        
+        # Une vraie fenêtre d'erreur AutoHotkey a généralement 3+ boutons spécifiques
+        $isErrorWindow = $errorButtonsFound -ge 3
+        
+        Write-Verbose "Window buttons found: $($allChildTexts -join ', ') | Error buttons: $errorButtonsFound/$($ErrorButtons.Count) | IsError: $isErrorWindow"
+        return $isErrorWindow
+        
+    } catch {
+        Write-Verbose "Error checking window buttons: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Test-AutohotkeyAvailable {
     param(
         [string]$CustomPath = "",
@@ -214,11 +264,42 @@ function Get-ErrorWindowText {
                 Write-Verbose "MATCH: AutoHotkey specific match for '$title'"
                 $isErrorWindow = $true
             }
-            # 3. Titre tres court mais contient le nom du script
+            # 3. Titre contient le nom du script - VÉRIFICATION INTELLIGENTE v1.2
             elseif ($title.Contains($scriptBaseName) -and $title.Length -lt 50) {
-                Write-Verbose "MATCH: Script basename match for '$title'"
-                $isErrorWindow = $true
+                Write-Verbose "POTENTIAL: Script basename match for '$title' - checking if error window..."
+                
+                # CORRECTION CRITIQUE v1.2: Vérifier si c'est vraiment une erreur via les boutons
+                $hasErrorButtons = Test-WindowHasErrorButtons -WindowHandle $window.Handle
+                
+                if ($hasErrorButtons) {
+                    Write-Verbose "CONFIRMED: This is an error window with buttons: '$title'"
+                    $isErrorWindow = $true
+                } else {
+                    Write-Verbose "SUCCESS: This is a normal script window, not an error: '$title'"
+                    # C'est une fenêtre normale du script = SUCCESS
+                    return @{Status="SUCCESS"; Message="Script window detected: $title"; WindowType="SUCCESS_WINDOW"}
+                }
             }
+            # 4. DÉSACTIVÉE TEMPORAIREMENT: Détection générale trop permissive (faux positifs)
+            # elseif ($title.Length -gt 3 -and $title.Length -lt 80 -and 
+            #         $title -notmatch "(?i)(explorateur|file explorer|chrome|notepad|visual studio|teams|outlook|program manager|_WINDOWTOP_|experience|paramètres|settings|calendar|mail|teams|courrier|julien|fernandez|elyse|energy|intralinks|project)" -and
+            #         $title -notmatch "(?i)(error|erreur|syntax|fatal|runtime|access.violation|division.by.zero|invalid.memory|microsoft|windows|office)" -and
+            #         $title -notmatch "(?i)(id \d+|pid \d+|did \d+|handle: \d+|@)" -and
+            #         $title -ne "Program Manager") {
+            #     Write-Verbose "POTENTIAL: General MsgBox candidate '$title' - checking if error window..."
+                
+            #     # Vérifier si c'est une fenêtre d'erreur AutoHotkey via les boutons
+            #     $hasErrorButtons = Test-WindowHasErrorButtons -WindowHandle $window.Handle
+                
+            #     if ($hasErrorButtons) {
+            #         Write-Verbose "CONFIRMED: This is an error window with AutoHotkey buttons: '$title'"
+            #         $isErrorWindow = $true
+            #     } else {
+            #         Write-Verbose "SUCCESS: General MsgBox detected as SUCCESS window: '$title'"
+            #         # C'est probablement une MsgBox normale = SUCCESS
+            #         return @{Status="SUCCESS"; Message="Script window detected: $title"; WindowType="SUCCESS_MSGBOX"}
+            #     }
+            # }
             
             if ($isErrorWindow) {
                 Write-Verbose "Potential error window found: '$title' - extracting full text..."
@@ -323,9 +404,9 @@ try {
         exit 0
     }
     
-    # 4. LANCEMENT PROCESSUS AVEC MONITORING
-    Write-Verbose "Launching AutoHotkey process..."
-    $ahkProcess = Start-Process -FilePath $ahkExecutable -ArgumentList "`"$ScriptPath`"" -PassThru
+    # 4. LANCEMENT PROCESSUS AVEC MONITORING - v1.2 ISOLATION COMPLÈTE
+    Write-Verbose "Launching AutoHotkey process with full isolation..."
+    $ahkProcess = Start-Process -FilePath $ahkExecutable -ArgumentList "`"$ScriptPath`"" -PassThru -WindowStyle Hidden -NoNewWindow:$false
     
     if (-not $ahkProcess) {
         Write-StructuredOutput -Status "ERROR" -Message "Failed to start AutoHotkey process"
@@ -358,15 +439,33 @@ try {
             break
         }
         
-        # Rechercher fenetres d'erreur (polling plus frequent)
+        # Rechercher fenetres d'erreur (polling plus frequent) - v1.2 DETECTION INTELLIGENTE
         $elapsed = (Get-Date) - $startTime
         Write-Verbose "Checking for error windows... (elapsed: $($elapsed.TotalMilliseconds)ms)"
-        $errorText = Get-ErrorWindowText
-        if ($errorText) {
-            Write-Verbose "Error window detected with text: $errorText"
+        $windowResult = Get-ErrorWindowText
+        
+        # v1.2: Traiter le nouveau format de retour (objet ou texte)
+        if ($windowResult -is [hashtable]) {
+            # Nouveau format v1.2 avec détection SUCCESS
+            if ($windowResult.Status -eq "SUCCESS") {
+                Write-Verbose "SUCCESS detected: $($windowResult.Message)"
+                # Retourner immédiatement le succès
+                Write-StructuredOutput -Status "SUCCESS" -Message $windowResult.Message
+                return
+            } elseif ($windowResult.Status -eq "ERROR") {
+                Write-Verbose "ERROR detected via intelligent detection: $($windowResult.Message)"
+                $errorDetected = $true
+                $errorMessage = $windowResult.Message
+            }
+        } elseif ($windowResult) {
+            # Format ancien (texte simple) = ERROR détecté
+            Write-Verbose "Error window detected with text: $windowResult"
             $errorDetected = $true
-            $errorMessage = $errorText
-            
+            $errorMessage = $windowResult
+        }
+        
+        # Si une erreur a été détectée, fermer le processus et arrêter
+        if ($errorDetected) {
             # Fermer le processus AutoHotkey defaillant
             try {
                 if (-not $ahkProcess.HasExited) {

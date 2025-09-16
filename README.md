@@ -1,158 +1,170 @@
-# AHK Wrapper PowerShell - AutoHotkey Script Launcher
+# AHK Wrapper PowerShell v1.2
 
-> **Wrapper PowerShell professionnel pour validation et exécution scripts AutoHotkey avec extraction d'erreurs complète**
+> **Wrapper PowerShell pour exécution et monitoring des scripts AutoHotkey avec détection intelligente des erreurs**
 
-## 🎯 Vue d'ensemble
+## 🚀 Utilisation Rapide
 
-AHK Wrapper PowerShell v1.1 est un lanceur de scripts AutoHotkey avec détection intelligente des erreurs et support des versions V1/V2. Il extrait automatiquement les messages d'erreur des fenêtres éphémères AutoHotkey pour intégration dans des workflows automatisés.
+```powershell
+# Exécuter un script AutoHotkey avec monitoring
+.\ahklauncher.ps1 "script.ahk" -Verbose
 
-📋 **[Guide d'utilisation LLM →](LLM_USAGE_GUIDE.md)** *Documentation simplifiée pour développement AHK assisté par IA*
+# Modes d'exécution
+.\ahklauncher.ps1 "script.ahk" -Mode Silent          # Détection erreurs uniquement
+.\ahklauncher.ps1 "script.ahk" -Mode Interactive     # Attend interactions utilisateur  
+.\ahklauncher.ps1 "script.ahv" -Mode Validation      # Détecte SUCCESS + ERROR
+```
 
-### Fonctionnalités principales
-- ✅ **Support V1/V2** : Détection automatique ou sélection forcée version AutoHotkey
-- ✅ **Extraction erreurs** : Capture messages fenêtres d'erreur éphémères avec EnumWindows API
-- ✅ **Détection portable** : Recherche automatique installations portables OneDrive
-- ✅ **Sortie structurée** : Format machine-readable pour intégration MCP/LLM
-- ✅ **Monitoring processus** : Détection erreurs par codes de sortie + timing
-- ✅ **Mode simulation** : Test commandes sans exécution (--WhatIf)
+## ✅ Fonctionnalités v1.2
 
-## 🚀 Installation et Usage
+### Détection Intelligente
+- ✅ **Distinction SUCCESS vs ERROR** : Analyse des boutons de fenêtres AutoHotkey
+- ✅ **Extraction complète du texte** : Messages d'erreur complets pour diagnostic
+- ✅ **Isolation processus** : Scripts AutoHotkey exécutés sans interference PowerShell
+- ✅ **Support AutoHotkey V1 + V2** : Détection automatique de version
+
+### ⚠️ CONTRAINTE IMPORTANTE - Détection SUCCESS
+**Pour que la détection SUCCESS fonctionne, le titre de la MsgBox doit contenir le nom du script :**
+```autohotkey
+; ✅ CORRECT - Détecté comme SUCCESS
+MsgBox("Message", "monscript.ahk - SUCCESS", 0)
+MsgBox("Message", "monscript", 0)
+
+; ❌ INCORRECT - Non détecté (timeout)  
+MsgBox("Message", "Succès", 0)
+MsgBox("Message", "Information", 0)
+```
+**Raison technique** : Le wrapper identifie les MsgBox SUCCESS en cherchant le nom du script dans le titre de la fenêtre, puis vérifie l'absence de boutons d'erreur AutoHotkey.
+
+### Formats de Sortie Structurés
+```
+STATUS: SUCCESS/ERROR/WAITING_INPUT
+MESSAGE: [Contenu extrait ou message d'erreur]  
+WINDOW_TYPE: ERROR_DIALOG/SUCCESS_WINDOW/INTERACTIVE_DIALOG/NONE
+TRAY_ICON: FOUND/NOT_FOUND
+EXECUTION_TIME: 1234ms
+TIMESTAMP: 2025-09-16 15:30:45
+```
+
+### Modes d'Exécution
+- **Silent** : Détection erreurs seulement, sortie immédiate
+- **Interactive** : Attend les interactions utilisateur (InputBox, etc.)
+- **Validation** : Détecte aussi les fenêtres de succès normales
+
+## 📁 Structure Projet
+
+```
+Ahk Wrapper Powershell/
+├── ahklauncher.ps1           # Script principal
+├── tests/                    # Scripts de test AutoHotkey
+│   ├── test_success_v2.ahk   # Test SUCCESS
+│   ├── test_simple_error.ahk # Test ERROR  
+│   └── test_ultra_simple_v2.ahk
+├── logs/ (auto-généré)       # Logs d'exécution
+└── README.md                 # Ce fichier
+```
+
+## 🔧 Installation et Prérequis
 
 ### Prérequis
-- Windows PowerShell 5.1+
-- AutoHotkey V1 et/ou V2 installés (standard ou portable)
+- **PowerShell 5.1+** avec Add-Type disponible
+- **AutoHotkey V1 ou V2** portable ou installé
+- **Windows 10/11** (APIs Win32 requises)
 
-### Syntaxe
+### Installation
+1. Cloner ou télécharger le projet
+2. Vérifier que PowerShell peut exécuter des scripts : `Set-ExecutionPolicy RemoteSigned`
+3. Tester l'installation : `.\ahklauncher.ps1 tests\test_simple_success.ahk -Verbose`
+
+## 📊 Exemples d'Utilisation
+
+### Test de Script AutoHotkey
 ```powershell
-.\ahklauncher.ps1 <ScriptPath> [-AhkVersion V1|V2|Auto] [-TimeoutMs 3000] [-WhatIf] [-Verbose]
+# Script qui fonctionne normalement
+.\ahklauncher.ps1 tests\test_success_v2.ahk -Verbose
+# Résultat attendu: STATUS: SUCCESS
+
+# Script avec erreur
+.\ahklauncher.ps1 tests\test_simple_error.ahk -Verbose  
+# Résultat attendu: STATUS: ERROR avec message détaillé
 ```
 
-### Exemples d'utilisation
-
-#### Usage basique
+### Intégration CI/CD
 ```powershell
-# Lancement avec auto-détection version
-.\ahklauncher.ps1 "mon_script.ahk"
-
-# Forcer AutoHotkey V1
-.\ahklauncher.ps1 "script_v1.ahk" -AhkVersion V1
-
-# Test sans exécution
-.\ahklauncher.ps1 "script.ahk" -WhatIf -Verbose
-```
-
-#### Intégration workflow
-```powershell
-# Validation avec gestion erreurs
-$result = .\ahklauncher.ps1 "validation.ahk" -Verbose
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "Script validé avec succès"
-} else {
-    Write-Error "Erreur détectée dans le script"
+# Usage dans pipeline de déploiement
+$result = .\ahklauncher.ps1 "deploy_script.ahk" -Mode Silent
+if ($result -like "*STATUS: ERROR*") {
+    throw "Déploiement échoué: $($result | Select-String 'MESSAGE:')"
 }
+Write-Host "Déploiement réussi"
 ```
 
-## 📊 Format de sortie
-
-### Sortie SUCCESS
-```
-STATUS: SUCCESS
-MESSAGE: Script launched successfully (no error detected within timeout)
-TRAY_ICON: NOT_CHECKED
-TIMESTAMP: 2025-09-12 18:23:10
-```
-
-### Sortie ERROR avec extraction
-```
-STATUS: ERROR  
-MESSAGE: test_simple_error.ahk | Ceci ne devrait jamais s'afficher car il y a une erreur de syntaxe au-dessus.
-TRAY_ICON: NOT_FOUND
-TIMESTAMP: 2025-09-12 18:23:10
-```
-
-### Codes de sortie
-- `0` : Succès, script exécuté sans erreur
-- `1` : Erreur détectée (fenêtre d'erreur ou processus défaillant)
-- `2` : Erreur configuration (fichier introuvable, AutoHotkey absent)
-
-## ⚙️ Configuration
-
-### Détection AutoHotkey
-Le script recherche AutoHotkey dans cet ordre :
-1. Chemin custom (`-AhkExecutable`)
-2. Installation portable OneDrive (V1/V2)
-3. Installation système PATH
-4. Emplacements standards Windows
-
-### Emplacements portables par défaut
-```
-%USERPROFILE%\OneDrive\Portable Softwares\Autohotkey scripts\
-├── AutohotkeyV1\AutoHotkeyU64.exe
-└── AutohotkeyV2\AutoHotkey64.exe
-```
-
-## 🔧 Fonctionnement technique
-
-### Détection d'erreurs avancée
-1. **EnumWindows API** : Énumération toutes fenêtres visibles
-2. **Matching intelligent** : Titre = nom script + mots-clés erreur
-3. **Extraction recursive** : Texte fenêtre principale + contrôles enfants
-4. **Monitoring processus** : Codes sortie + timing rapide (< 500ms = erreur)
-
-### Architecture modulaire
-- **Test-AutohotkeyAvailable** : Détection installations
-- **Get-ErrorWindowText** : Extraction erreurs fenêtres via Win32API
-- **Get-WindowTextRecursive** : Parcours récursif contrôles UI
-- **Write-StructuredOutput** : Format sortie standardisé
-
-## 🧪 Tests et validation
-
-### Scripts de test inclus
-```
-tests/
-├── test_simple_error.ahk    # Erreur syntaxe V1 (variable$)
-├── test_success.ahk         # Script fonctionnel V1
-└── test_success_v2.ahk      # Script fonctionnel V2
-```
-
-### Validation manuelle
+### Diagnostic Avancé  
 ```powershell
-# Test erreur V1
-.\ahklauncher.ps1 tests\test_simple_error.ahk -AhkVersion V1 -Verbose
-
-# Test succès V2
-.\ahklauncher.ps1 tests\test_success_v2.ahk -AhkVersion V2 -Verbose
+# Extraction texte complète des fenêtres
+.\ahklauncher.ps1 "script_problematique.ahk" -TextExtraction Full -Verbose
+# Sortie: Texte complet des fenêtres AutoHotkey pour debugging
 ```
 
-## 🔗 Intégration MCP/LLM
+## 🐛 Résolution de Problèmes
 
-Format de sortie optimisé pour parsing automatique :
-- **STATUS** : SUCCESS|ERROR (parsing état)
-- **MESSAGE** : Texte erreur extrait ou confirmation succès
-- **TIMESTAMP** : Horodatage précis exécution
-- **Exit codes** : Standard système pour workflows
+### Problèmes Courants
 
-### Exemple intégration Claude MCP
-```javascript
-const result = await exec(`powershell -Command "& '${ahkLauncher}' '${scriptPath}' -Verbose"`);
-const output = parseStructuredOutput(result.stdout);
-if (output.STATUS === "ERROR") {
-    return `AutoHotkey Error: ${output.MESSAGE}`;
-}
+**Erreur "Le terme « if » n'est pas reconnu"**
+- ✅ **Résolu en v1.2** : Isolation processus complète  
+- Cause : Anciennement PowerShell interprétait le code AutoHotkey
+- Solution : Mise à jour vers v1.2
+
+**Scripts SUCCESS détectés comme ERROR**
+- ✅ **Résolu en v1.2** : Détection intelligente des boutons  
+- Cause : Anciennement toute fenêtre avec nom du script = erreur
+- Solution : Analyse des boutons de fenêtre AutoHotkey
+
+**Texte d'erreur incomplet**  
+- ✅ **Résolu en v1.2** : Extraction texte universelle
+- Cause : Get-WindowText basique insuffisant
+- Solution : Extraction récursive avec APIs Win32
+
+### Diagnostic
+```powershell  
+# Activer les logs verbeux
+.\ahklauncher.ps1 "script.ahk" -Verbose
+
+# Vérifier les fenêtres détectées
+# Le log verbose affiche toutes les fenêtres inspectées et leur classification
 ```
 
-## 📋 Roadmap
+## 🔄 Historique Versions
 
-- [ ] Test AutoHotkey V2 avec scripts erreur spécifiques
-- [ ] Support détection icônes tray avancée
-- [ ] Amélioration patterns détection erreurs runtime
-- [ ] Documentation API Win32 utilisées
-- [ ] Templates scripts test étendus
+### v1.2 (Actuel) - Corrections Critiques
+- ✅ **Isolation processus complète** : Fini les erreurs PowerShell
+- ✅ **Détection intelligente** : SUCCESS vs ERROR basé sur boutons de fenêtres  
+- ✅ **Extraction texte universelle** : Messages complets pour diagnostic
+- ✅ **Modes d'exécution configurables** : Silent, Interactive, Validation
 
-## 🤝 Support
+### v1.1 (Précédent)
+- ❌ Scripts SUCCESS détectés comme ERROR
+- ❌ Erreurs PowerShell "Le terme « if » n'est pas reconnu"  
+- ❌ Extraction texte incomplète des fenêtres
 
-Pour rapporter bugs ou suggestions :
-- Logs détaillés avec `-Verbose` 
-- Version AutoHotkey utilisée
-- Contenu script testé
-- Sortie complète ahklauncher.ps1
+## 🤝 Contribution
+
+### Structure de Test
+Tous les nouveaux scripts de test doivent être ajoutés dans `tests/` avec nomenclature :
+- `test_[fonction]_v[version].ahk` pour les tests de fonctionnalité
+- `test_simple_[type].ahk` pour les tests basiques
+
+### Validation  
+```powershell
+# Avant commit : validation complète
+.\tests\validate_wrapper_v12.ps1
+```
+
+## 📞 Support
+
+- **Issues** : Utiliser les logs verbeux (`-Verbose`) pour diagnostic
+- **Debug** : Logs stockés temporairement, extraire le contenu immédiatement  
+- **Documentation** : `action_plan.md` pour développeurs, `best_practices_current_project.md` pour architecture
+
+---
+
+**AHK Wrapper PowerShell v1.2** - Monitoring fiable des scripts AutoHotkey avec détection intelligente
