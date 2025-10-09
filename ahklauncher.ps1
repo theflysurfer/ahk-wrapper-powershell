@@ -1,24 +1,38 @@
 param(
     [Parameter(Mandatory=$true, Position=0)]
     [string]$ScriptPath,
-    
+
     [Parameter(Mandatory=$false)]
     [int]$TimeoutMs = 3000,
-    
+
     [Parameter(Mandatory=$false)]
     [switch]$WhatIf,
-    
+
     [Parameter(Mandatory=$false)]
     [string]$AhkExecutable = "",
-    
+
     [Parameter(Mandatory=$false)]
     [ValidateSet("", "V1", "V2", "Auto")]
-    [string]$AhkVersion = "Auto"
+    [string]$AhkVersion = "Auto",
+
+    [Parameter(Mandatory=$false)]
+    [ValidateSet("Text", "JSON")]
+    [string]$OutputFormat = "Text",
+
+    [Parameter(Mandatory=$false)]
+    [switch]$LogFile,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$Screenshot,
+
+    [Parameter(Mandatory=$false)]
+    [string]$ScreenshotPath = ""
 )
 
 # AHK Launcher PowerShell - Script Validation AutoHotkey avec Extraction Erreurs
-# Version: 1.1 - EnumWindows Implementation
+# Version: 1.4 - JSON Output + Auto Logging + Screenshot Capture
 # Objectif: Validation rapide scripts AHK + extraction erreurs via APIs Windows
+# v1.3: JSON output format + automatic log file generation
 
 # Add-Type pour APIs Windows necessaires + EnumWindows fonctionnel
 Add-Type @'
@@ -74,24 +88,89 @@ public class Win32API {
     }
 }
 
-public class WindowInfo 
+public class WindowInfo
 {
     public IntPtr Handle { get; set; }
     public string Title { get; set; }
 }
 '@
+
+# Add-Type pour screenshot - System.Drawing et System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+
 function Write-StructuredOutput {
     param(
         [string]$Status,
         [string]$Message,
         [string]$TrayIcon = "NOT_CHECKED",
-        [string]$Timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        [string]$Timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"),
+        [int]$ExecutionTimeMs = 0,
+        [string]$Format = "Text",
+        [string]$ScreenshotFile = ""
     )
-    
-    Write-Output "STATUS: $Status"
-    Write-Output "MESSAGE: $Message"
-    Write-Output "TRAY_ICON: $TrayIcon"
-    Write-Output "TIMESTAMP: $Timestamp"
+
+    if ($Format -eq "JSON") {
+        $result = @{
+            status = $Status
+            message = $Message
+            trayIcon = $TrayIcon
+            timestamp = $Timestamp
+            executionTimeMs = $ExecutionTimeMs
+            scriptPath = $ScriptPath
+        }
+        if ($ScreenshotFile) {
+            $result.screenshot = $ScreenshotFile
+        }
+        Write-Output ($result | ConvertTo-Json -Compress)
+    } else {
+        Write-Output "STATUS: $Status"
+        Write-Output "MESSAGE: $Message"
+        Write-Output "TRAY_ICON: $TrayIcon"
+        Write-Output "TIMESTAMP: $Timestamp"
+        if ($ExecutionTimeMs -gt 0) {
+            Write-Output "EXECUTION_TIME: ${ExecutionTimeMs}ms"
+        }
+        if ($ScreenshotFile) {
+            Write-Output "SCREENSHOT: $ScreenshotFile"
+        }
+    }
+}
+
+# Global log file path (si activé)
+$global:LogFilePath = $null
+
+function Write-LogFile {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+
+    if ($global:LogFilePath -and $LogFile) {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+        $logEntry = "[$timestamp] [$Level] $Message"
+        Add-Content -Path $global:LogFilePath -Value $logEntry -Encoding UTF8
+    }
+}
+
+function Initialize-LogFile {
+    if ($LogFile) {
+        $logDir = Join-Path $PSScriptRoot "logs"
+        if (-not (Test-Path $logDir)) {
+            New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        }
+
+        $scriptBaseName = [System.IO.Path]::GetFileNameWithoutExtension($ScriptPath)
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $global:LogFilePath = Join-Path $logDir "${scriptBaseName}_${timestamp}.log"
+
+        Write-LogFile "=== AHK Launcher v1.3 ===" "INFO"
+        Write-LogFile "Script: $ScriptPath" "INFO"
+        Write-LogFile "Timeout: ${TimeoutMs}ms" "INFO"
+        Write-LogFile "AHK Version: $AhkVersion" "INFO"
+        Write-LogFile "Output Format: $OutputFormat" "INFO"
+        Write-LogFile "=========================" "INFO"
+    }
 }
 
 # v1.2 CORRECTION CRITIQUE: Fonction pour détecter les vrais boutons d'erreur AutoHotkey
@@ -377,43 +456,113 @@ function Test-TrayIconPresent {
     return if ($ahkProcesses) { "FOUND" } else { "NOT_FOUND" }
 }
 
+function Take-Screenshot {
+    param(
+        [string]$OutputPath,
+        [string]$ScriptName,
+        [string]$Status
+    )
+
+    try {
+        Write-Verbose "Taking screenshot..."
+        Write-LogFile "Taking screenshot" "INFO"
+
+        # Créer le dossier screenshots si nécessaire
+        $screenshotDir = if ($OutputPath) { $OutputPath } else { Join-Path $PSScriptRoot "screenshots" }
+        if (-not (Test-Path $screenshotDir)) {
+            New-Item -ItemType Directory -Path $screenshotDir -Force | Out-Null
+            Write-Verbose "Created screenshot directory: $screenshotDir"
+        }
+
+        # Générer nom de fichier avec timestamp et status
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $filename = "${ScriptName}_${timestamp}_${Status}.png"
+        $fullPath = Join-Path $screenshotDir $filename
+
+        # Capturer l'écran complet
+        $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+        $bounds = $screen.Bounds
+        $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+
+        # Copier l'écran dans le bitmap
+        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+
+        # Sauvegarder en PNG
+        $bitmap.Save($fullPath, [System.Drawing.Imaging.ImageFormat]::Png)
+
+        # Libérer les ressources
+        $graphics.Dispose()
+        $bitmap.Dispose()
+
+        Write-Verbose "Screenshot saved: $fullPath"
+        Write-LogFile "Screenshot saved: $fullPath" "INFO"
+
+        return $fullPath
+    }
+    catch {
+        Write-Verbose "Error taking screenshot: $($_.Exception.Message)"
+        Write-LogFile "Error taking screenshot: $($_.Exception.Message)" "ERROR"
+        return $null
+    }
+}
+
 # MAIN WORKFLOW
 try {
-    Write-Verbose "Starting AHK Launcher - Script: $ScriptPath, Timeout: ${TimeoutMs}ms"
-    
+    # Initialize log file if requested
+    Initialize-LogFile
+
+    Write-Verbose "Starting AHK Launcher v1.4 - Script: $ScriptPath, Timeout: ${TimeoutMs}ms"
+    Write-LogFile "Starting AHK Launcher" "INFO"
+
+    # Track execution time
+    $global:ExecutionStartTime = Get-Date
+
+    # Initialize screenshot path
+    $global:ScreenshotPath = $null
+    $scriptBaseName = [System.IO.Path]::GetFileNameWithoutExtension((Split-Path -Leaf $ScriptPath))
+
     # 1. VALIDATION PARAMETRES
     if (-not (Test-Path $ScriptPath)) {
-        Write-StructuredOutput -Status "ERROR" -Message "Script file not found: $ScriptPath"
+        Write-LogFile "Script file not found: $ScriptPath" "ERROR"
+        Write-StructuredOutput -Status "ERROR" -Message "Script file not found: $ScriptPath" -Format $OutputFormat
         exit 2
     }
-    
+
     $ScriptPath = Resolve-Path $ScriptPath
-    Write-Verbose "Resolved script path: $ScriptPath"    
+    Write-Verbose "Resolved script path: $ScriptPath"
+    Write-LogFile "Resolved script path: $ScriptPath" "INFO"    
     # 2. DETECTION AUTOHOTKEY
     $ahkExecutable = Test-AutohotkeyAvailable -CustomPath $AhkExecutable -PreferredVersion $AhkVersion
     if (-not $ahkExecutable) {
-        Write-StructuredOutput -Status "ERROR" -Message "AutoHotkey executable not found in PATH, portable locations, or custom path"
+        Write-LogFile "AutoHotkey executable not found" "ERROR"
+        Write-StructuredOutput -Status "ERROR" -Message "AutoHotkey executable not found in PATH, portable locations, or custom path" -Format $OutputFormat
         exit 2
     }
-    
+
     Write-Verbose "Found AutoHotkey: $ahkExecutable"
+    Write-LogFile "Found AutoHotkey: $ahkExecutable" "INFO"
     
     # 3. MODE SIMULATION (-WhatIf)
     if ($WhatIf) {
-        Write-StructuredOutput -Status "SUCCESS" -Message "Would execute: $ahkExecutable `"$ScriptPath`" (simulation mode)" -TrayIcon "SIMULATION"
+        Write-LogFile "WhatIf mode: Would execute $ahkExecutable" "INFO"
+        Write-StructuredOutput -Status "SUCCESS" -Message "Would execute: $ahkExecutable `"$ScriptPath`" (simulation mode)" -TrayIcon "SIMULATION" -Format $OutputFormat
         exit 0
     }
     
     # 4. LANCEMENT PROCESSUS AVEC MONITORING - v1.2 ISOLATION COMPLÈTE
     Write-Verbose "Launching AutoHotkey process with full isolation..."
+    Write-LogFile "Launching AutoHotkey process" "INFO"
     $ahkProcess = Start-Process -FilePath $ahkExecutable -ArgumentList "`"$ScriptPath`"" -PassThru -WindowStyle Hidden -NoNewWindow:$false
-    
+
     if (-not $ahkProcess) {
-        Write-StructuredOutput -Status "ERROR" -Message "Failed to start AutoHotkey process"
+        Write-LogFile "Failed to start AutoHotkey process" "ERROR"
+        Write-StructuredOutput -Status "ERROR" -Message "Failed to start AutoHotkey process" -Format $OutputFormat
         exit 1
     }
-    
+
     Write-Verbose "Process started - PID: $($ahkProcess.Id)"
+    Write-LogFile "Process started - PID: $($ahkProcess.Id)" "INFO"
     
     # 5. MONITORING AVEC TIMEOUT
     $startTime = Get-Date
@@ -424,9 +573,11 @@ try {
         # Verifier si le processus a termine de facon inattendue
         if ($ahkProcess.HasExited) {
             Write-Verbose "Process exited with code: $($ahkProcess.ExitCode)"
+            Write-LogFile "Process exited with code: $($ahkProcess.ExitCode)" "INFO"
             if ($ahkProcess.ExitCode -ne 0) {
                 $errorDetected = $true
                 $errorMessage = "AutoHotkey process exited with error code: $($ahkProcess.ExitCode)"
+                Write-LogFile $errorMessage "ERROR"
             } else {
                 # Processus termine avec code 0 mais tres rapidement - probable erreur
                 $elapsed = (Get-Date) - $startTime
@@ -434,6 +585,7 @@ try {
                     Write-Verbose "Process exited very quickly ($($elapsed.TotalMilliseconds)ms) - likely syntax error"
                     $errorDetected = $true
                     $errorMessage = "AutoHotkey process exited quickly (likely syntax error) - duration: $($elapsed.TotalMilliseconds)ms"
+                    Write-LogFile $errorMessage "ERROR"
                 }
             }
             break
@@ -449,17 +601,28 @@ try {
             # Nouveau format v1.2 avec détection SUCCESS
             if ($windowResult.Status -eq "SUCCESS") {
                 Write-Verbose "SUCCESS detected: $($windowResult.Message)"
-                # Retourner immédiatement le succès
-                Write-StructuredOutput -Status "SUCCESS" -Message $windowResult.Message
+                Write-LogFile "SUCCESS: $($windowResult.Message)" "INFO"
+
+                # Take screenshot if requested
+                if ($Screenshot) {
+                    $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "SUCCESS"
+                }
+
+                # Calculate execution time
+                $execTime = [int]((Get-Date) - $global:ExecutionStartTime).TotalMilliseconds
+                Write-StructuredOutput -Status "SUCCESS" -Message $windowResult.Message -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
+                Write-LogFile "Total execution time: ${execTime}ms" "INFO"
                 return
             } elseif ($windowResult.Status -eq "ERROR") {
                 Write-Verbose "ERROR detected via intelligent detection: $($windowResult.Message)"
+                Write-LogFile "ERROR detected: $($windowResult.Message)" "ERROR"
                 $errorDetected = $true
                 $errorMessage = $windowResult.Message
             }
         } elseif ($windowResult) {
             # Format ancien (texte simple) = ERROR détecté
             Write-Verbose "Error window detected with text: $windowResult"
+            Write-LogFile "Error window: $windowResult" "ERROR"
             $errorDetected = $true
             $errorMessage = $windowResult
         }
@@ -490,20 +653,43 @@ try {
     }
     
     # 6. DETERMINATION RESULTAT ET SORTIE
+    $execTime = [int]((Get-Date) - $global:ExecutionStartTime).TotalMilliseconds
+
     if ($errorDetected) {
-        Write-StructuredOutput -Status "ERROR" -Message $errorMessage -TrayIcon "NOT_FOUND"
+        # Take screenshot if requested
+        if ($Screenshot -and -not $global:ScreenshotPath) {
+            $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "ERROR"
+        }
+
+        Write-LogFile "Final status: ERROR - $errorMessage" "ERROR"
+        Write-LogFile "Total execution time: ${execTime}ms" "INFO"
+        Write-StructuredOutput -Status "ERROR" -Message $errorMessage -TrayIcon "NOT_FOUND" -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
         exit 1
     }
     elseif ($timeoutReached) {
+        # Take screenshot if requested
+        if ($Screenshot) {
+            $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "SUCCESS"
+        }
+
         # Timeout atteint - probable succes (script lance, pas d'erreur detectee)
         $trayStatus = Test-TrayIconPresent
-        Write-StructuredOutput -Status "SUCCESS" -Message "Script launched successfully (no error detected within timeout)" -TrayIcon $trayStatus
+        Write-LogFile "Timeout reached - assuming success" "INFO"
+        Write-LogFile "Total execution time: ${execTime}ms" "INFO"
+        Write-StructuredOutput -Status "SUCCESS" -Message "Script launched successfully (no error detected within timeout)" -TrayIcon $trayStatus -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
         exit 0
     }
     else {
+        # Take screenshot if requested
+        if ($Screenshot) {
+            $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "SUCCESS"
+        }
+
         # Processus termine normalement
         $trayStatus = Test-TrayIconPresent
-        Write-StructuredOutput -Status "SUCCESS" -Message "Script completed successfully" -TrayIcon $trayStatus
+        Write-LogFile "Process completed normally" "INFO"
+        Write-LogFile "Total execution time: ${execTime}ms" "INFO"
+        Write-StructuredOutput -Status "SUCCESS" -Message "Script completed successfully" -TrayIcon $trayStatus -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
         exit 0
     }
     
@@ -521,6 +707,7 @@ try {
     }
 }
 catch {
-    Write-StructuredOutput -Status "ERROR" -Message "Unexpected error: $($_.Exception.Message)"
+    Write-LogFile "Unexpected error: $($_.Exception.Message)" "FATAL"
+    Write-StructuredOutput -Status "ERROR" -Message "Unexpected error: $($_.Exception.Message)" -Format $OutputFormat
     exit 1
 }
