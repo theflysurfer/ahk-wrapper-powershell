@@ -1,0 +1,7 @@
+# Generated directories
+logs/
+screenshots/
+
+# Test outputs
+*.log
+*.png
