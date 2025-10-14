@@ -361,7 +361,14 @@ Write-Host "✅ All AHK files validated"
 
 ## 🔄 Historique Versions
 
-### v1.4 (Actuel) - Screenshot Capture\n- ✨ **Screenshot Capture** : `-Screenshot` pour capturer l'écran automatiquement\n- ✨ **Custom Path** : `-ScreenshotPath` pour dossier personnalisé\n- ✨ **Smart Naming** : `{script}_{timestamp}_{status}.png`\n- ✨ **JSON Integration** : Chemin screenshot dans output structuré\n- ✅ **Resource Management** : Libération propre des ressources GDI+\n\n### v1.3 (Précédent) - JSON Output + Auto Logging
+### v1.4 (Actuel) - Screenshot Capture
+- ✨ **Screenshot Capture** : `-Screenshot` pour capturer l'écran automatiquement
+- ✨ **Custom Path** : `-ScreenshotPath` pour dossier personnalisé
+- ✨ **Smart Naming** : `{script}_{timestamp}_{status}.png`
+- ✨ **JSON Integration** : Chemin screenshot dans output structuré
+- ✨ **WindowHandle Support** : WindowHandle intégré dans retours SUCCESS/ERROR pour screenshots ciblés
+- ✅ **Resource Management** : Libération propre des ressources GDI+
+- ✅ **V1 + V2 Compatible** : Fenêtres d'erreur identiques, détection automatique\n\n### v1.3 (Précédent) - JSON Output + Auto Logging
 - ✨ **JSON Output Format** : `-OutputFormat JSON` pour parsing automatique
 - ✨ **Log File Automatique** : `-LogFile` crée logs détaillés dans `logs/`
 - ✨ **Execution Time Tracking** : Temps d'exécution en millisecondes

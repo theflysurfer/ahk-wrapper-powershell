@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true, Position=0)]
     [string]$ScriptPath,
 
@@ -44,29 +44,45 @@ using System.Collections.Generic;
 public class Win32API {
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-    
+
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-    
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool IsWindowVisible(IntPtr hWnd);
-    
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
-    
+
     // GetWindow constants
     public const uint GW_CHILD = 5;
     public const uint GW_HWNDNEXT = 2;
-    
+
     // EnumWindows delegate et fonction
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-    
+
     [DllImport("user32.dll")]
     public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
-    
+
+    // Screenshot APIs - Capture de fenÃªtre spÃ©cifique
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    public const uint PW_CLIENTONLY = 0x00000001;
+    public const uint PW_RENDERFULLCONTENT = 0x00000002;
+
     // Classe pour collecter les fenetres trouvees
     public static List<WindowInfo> FoundWindows = new List<WindowInfo>();
-    
+
     public static bool EnumWindowCallback(IntPtr hWnd, IntPtr lParam)
     {
         if (IsWindowVisible(hWnd))
@@ -80,12 +96,24 @@ public class Win32API {
         }
         return true; // Continue enumeration
     }
-    
+
     public static void EnumerateWindows()
     {
         FoundWindows.Clear();
         EnumWindows(EnumWindowCallback, IntPtr.Zero);
     }
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct RECT
+{
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+
+    public int Width { get { return Right - Left; } }
+    public int Height { get { return Bottom - Top; } }
 }
 
 public class WindowInfo
@@ -137,7 +165,7 @@ function Write-StructuredOutput {
     }
 }
 
-# Global log file path (si activé)
+# Global log file path (si activÃ©)
 $global:LogFilePath = $null
 
 function Write-LogFile {
@@ -173,7 +201,7 @@ function Initialize-LogFile {
     }
 }
 
-# v1.2 CORRECTION CRITIQUE: Fonction pour détecter les vrais boutons d'erreur AutoHotkey
+# v1.2 CORRECTION CRITIQUE: Fonction pour dÃ©tecter les vrais boutons d'erreur AutoHotkey
 function Test-WindowHasErrorButtons {
     param(
         [IntPtr]$WindowHandle,
@@ -203,7 +231,7 @@ function Test-WindowHasErrorButtons {
             $childHandle = [Win32API]::GetWindow($childHandle, [Win32API]::GW_HWNDNEXT)
         }
         
-        # Vérifier si on a au moins 3 boutons d'erreur typiques AutoHotkey
+        # VÃ©rifier si on a au moins 3 boutons d'erreur typiques AutoHotkey
         $errorButtonsFound = 0
         foreach ($buttonText in $ErrorButtons) {
             if ($allChildTexts -contains $buttonText) {
@@ -211,7 +239,7 @@ function Test-WindowHasErrorButtons {
             }
         }
         
-        # Une vraie fenêtre d'erreur AutoHotkey a généralement 3+ boutons spécifiques
+        # Une vraie fenÃªtre d'erreur AutoHotkey a gÃ©nÃ©ralement 3+ boutons spÃ©cifiques
         $isErrorWindow = $errorButtonsFound -ge 3
         
         Write-Verbose "Window buttons found: $($allChildTexts -join ', ') | Error buttons: $errorButtonsFound/$($ErrorButtons.Count) | IsError: $isErrorWindow"
@@ -316,10 +344,10 @@ function Get-ErrorWindowText {
             # Correspondances possibles pour fenetres d'erreur AutoHotkey
             $isErrorWindow = $false
             
-            # 1. Titre exact = nom du script ET vérifier si c'est vraiment une erreur
+            # 1. Titre exact = nom du script ET vÃ©rifier si c'est vraiment une erreur
             if ($title -eq $scriptName -or $title -eq $scriptBaseName) {
                 Write-Verbose "POTENTIAL: Script name match for '$title' - checking if error window..."
-                # Extraire le texte pour vérifier si c'est une vraie erreur
+                # Extraire le texte pour vÃ©rifier si c'est une vraie erreur
                 $fullText = Get-WindowTextRecursive -WindowHandle $window.Handle
                 if ($fullText -and ($fullText -match "(?i)(&Abort|&Help|&Edit|&Reload|E&xitApp|&Continue|Error|Erreur|Fatal|Syntax|Runtime|Access Violation|Division by zero|Invalid memory)")) {
                     Write-Verbose "CONFIRMED: This is an error window with buttons: '$fullText'"
@@ -336,18 +364,18 @@ function Get-ErrorWindowText {
                 Write-Verbose "MATCH: Error keyword match for '$title'"
                 $isErrorWindow = $true
             }
-            # 2bis. AutoHotkey spécifique (mais pas Explorateur de fichiers)
+            # 2bis. AutoHotkey spÃ©cifique (mais pas Explorateur de fichiers)
             elseif ($title -match "(?i)autohotkey" -and 
                     $title -notmatch "(?i)(explorateur|file explorer|scripts.*explorateur)" -and 
                     $title.Length -lt 80) {
                 Write-Verbose "MATCH: AutoHotkey specific match for '$title'"
                 $isErrorWindow = $true
             }
-            # 3. Titre contient le nom du script - VÉRIFICATION INTELLIGENTE v1.2
+            # 3. Titre contient le nom du script - VÃ‰RIFICATION INTELLIGENTE v1.2
             elseif ($title.Contains($scriptBaseName) -and $title.Length -lt 50) {
                 Write-Verbose "POTENTIAL: Script basename match for '$title' - checking if error window..."
                 
-                # CORRECTION CRITIQUE v1.2: Vérifier si c'est vraiment une erreur via les boutons
+                # CORRECTION CRITIQUE v1.2: VÃ©rifier si c'est vraiment une erreur via les boutons
                 $hasErrorButtons = Test-WindowHasErrorButtons -WindowHandle $window.Handle
                 
                 if ($hasErrorButtons) {
@@ -355,19 +383,19 @@ function Get-ErrorWindowText {
                     $isErrorWindow = $true
                 } else {
                     Write-Verbose "SUCCESS: This is a normal script window, not an error: '$title'"
-                    # C'est une fenêtre normale du script = SUCCESS
-                    return @{Status="SUCCESS"; Message="Script window detected: $title"; WindowType="SUCCESS_WINDOW"}
+                    # C'est une fenÃªtre normale du script = SUCCESS
+                    return @{Status="SUCCESS"; Message="Script window detected: $title"; WindowType="SUCCESS_WINDOW"; WindowHandle=$window.Handle}
                 }
             }
-            # 4. DÉSACTIVÉE TEMPORAIREMENT: Détection générale trop permissive (faux positifs)
+            # 4. DÃ‰SACTIVÃ‰E TEMPORAIREMENT: DÃ©tection gÃ©nÃ©rale trop permissive (faux positifs)
             # elseif ($title.Length -gt 3 -and $title.Length -lt 80 -and 
-            #         $title -notmatch "(?i)(explorateur|file explorer|chrome|notepad|visual studio|teams|outlook|program manager|_WINDOWTOP_|experience|paramètres|settings|calendar|mail|teams|courrier|julien|fernandez|elyse|energy|intralinks|project)" -and
+            #         $title -notmatch "(?i)(explorateur|file explorer|chrome|notepad|visual studio|teams|outlook|program manager|_WINDOWTOP_|experience|paramÃ¨tres|settings|calendar|mail|teams|courrier|julien|fernandez|elyse|energy|intralinks|project)" -and
             #         $title -notmatch "(?i)(error|erreur|syntax|fatal|runtime|access.violation|division.by.zero|invalid.memory|microsoft|windows|office)" -and
             #         $title -notmatch "(?i)(id \d+|pid \d+|did \d+|handle: \d+|@)" -and
             #         $title -ne "Program Manager") {
             #     Write-Verbose "POTENTIAL: General MsgBox candidate '$title' - checking if error window..."
                 
-            #     # Vérifier si c'est une fenêtre d'erreur AutoHotkey via les boutons
+            #     # VÃ©rifier si c'est une fenÃªtre d'erreur AutoHotkey via les boutons
             #     $hasErrorButtons = Test-WindowHasErrorButtons -WindowHandle $window.Handle
                 
             #     if ($hasErrorButtons) {
@@ -388,12 +416,12 @@ function Get-ErrorWindowText {
                 
                 if ($fullText -and $fullText.Length -gt 10) {
                     Write-Verbose "Successfully extracted error text: '$fullText'"
-                    return $fullText
+                    return @{Status="ERROR"; Message=$fullText; WindowType="ERROR_WINDOW"; WindowHandle=$window.Handle}
                 }
                 else {
                     Write-Verbose "Could not extract meaningful text from error window"
                     # Retourner au moins le titre si on ne peut pas avoir plus
-                    return "Error detected in window: $title"
+                    return @{Status="ERROR"; Message="Error detected in window: $title"; WindowType="ERROR_WINDOW"; WindowHandle=$window.Handle}
                 }
             }
         }        
@@ -460,43 +488,87 @@ function Take-Screenshot {
     param(
         [string]$OutputPath,
         [string]$ScriptName,
-        [string]$Status
+        [string]$Status,
+        [IntPtr]$WindowHandle = [IntPtr]::Zero
     )
 
     try {
         Write-Verbose "Taking screenshot..."
-        Write-LogFile "Taking screenshot" "INFO"
+        Write-LogFile "Taking screenshot (WindowHandle: $WindowHandle)" "INFO"
 
-        # Créer le dossier screenshots si nécessaire
+        # CrÃ©er le dossier screenshots si nÃ©cessaire
         $screenshotDir = if ($OutputPath) { $OutputPath } else { Join-Path $PSScriptRoot "screenshots" }
         if (-not (Test-Path $screenshotDir)) {
             New-Item -ItemType Directory -Path $screenshotDir -Force | Out-Null
             Write-Verbose "Created screenshot directory: $screenshotDir"
         }
 
-        # Générer nom de fichier avec timestamp et status
+        # GÃ©nÃ©rer nom de fichier avec timestamp et status
         $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
         $filename = "${ScriptName}_${timestamp}_${Status}.png"
         $fullPath = Join-Path $screenshotDir $filename
 
-        # Capturer l'écran complet
-        $screen = [System.Windows.Forms.Screen]::PrimaryScreen
-        $bounds = $screen.Bounds
-        $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        # Si handle fourni, capturer la fenÃªtre spÃ©cifique
+        if ($WindowHandle -ne [IntPtr]::Zero) {
+            Write-Verbose "Capturing specific window (Handle: $WindowHandle)"
 
-        # Copier l'écran dans le bitmap
-        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            # Obtenir dimensions de la fenÃªtre
+            $rect = New-Object RECT
+            $success = [Win32API]::GetWindowRect($WindowHandle, [ref]$rect)
 
-        # Sauvegarder en PNG
-        $bitmap.Save($fullPath, [System.Drawing.Imaging.ImageFormat]::Png)
+            if (-not $success -or $rect.Width -le 0 -or $rect.Height -le 0) {
+                Write-Verbose "Invalid window dimensions, falling back to full screen"
+                throw "Invalid window rect"
+            }
 
-        # Libérer les ressources
-        $graphics.Dispose()
-        $bitmap.Dispose()
+            # CrÃ©er bitmap aux dimensions de la fenÃªtre
+            $bitmap = New-Object System.Drawing.Bitmap($rect.Width, $rect.Height)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $hdc = $graphics.GetHdc()
 
-        Write-Verbose "Screenshot saved: $fullPath"
-        Write-LogFile "Screenshot saved: $fullPath" "INFO"
+            # PrintWindow capture la fenÃªtre mÃªme si sur autre bureau virtuel
+            $printed = [Win32API]::PrintWindow($WindowHandle, $hdc, [Win32API]::PW_RENDERFULLCONTENT)
+
+            $graphics.ReleaseHdc($hdc)
+
+            if (-not $printed) {
+                Write-Verbose "PrintWindow failed, trying GDI capture"
+                # Fallback: copier depuis DC de la fenÃªtre
+                $srcDC = [Win32API]::GetDC($WindowHandle)
+                $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, [System.Drawing.Size]::new($rect.Width, $rect.Height))
+                [Win32API]::ReleaseDC($WindowHandle, $srcDC) | Out-Null
+            }
+
+            # Sauvegarder en PNG haute qualitÃ©
+            $encoderParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
+            $encoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, 95)
+            $pngEncoder = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq "image/png" }
+
+            $bitmap.Save($fullPath, [System.Drawing.Imaging.ImageFormat]::Png)
+
+            # LibÃ©rer ressources
+            $graphics.Dispose()
+            $bitmap.Dispose()
+
+            Write-Verbose "Window screenshot saved: $fullPath ($($rect.Width)x$($rect.Height))"
+            Write-LogFile "Window screenshot saved: $fullPath" "INFO"
+        }
+        else {
+            Write-Verbose "No window handle provided, capturing full screen"
+
+            # Capturer l'Ã©cran complet (fallback)
+            $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+            $bounds = $screen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bitmap.Save($fullPath, [System.Drawing.Imaging.ImageFormat]::Png)
+            $graphics.Dispose()
+            $bitmap.Dispose()
+
+            Write-Verbose "Full screen screenshot saved: $fullPath"
+            Write-LogFile "Full screen screenshot saved: $fullPath" "INFO"
+        }
 
         return $fullPath
     }
@@ -518,8 +590,9 @@ try {
     # Track execution time
     $global:ExecutionStartTime = Get-Date
 
-    # Initialize screenshot path
+    # Initialize screenshot path and error window handle
     $global:ScreenshotPath = $null
+    $global:ErrorWindowHandle = [IntPtr]::Zero
     $scriptBaseName = [System.IO.Path]::GetFileNameWithoutExtension((Split-Path -Leaf $ScriptPath))
 
     # 1. VALIDATION PARAMETRES
@@ -550,7 +623,7 @@ try {
         exit 0
     }
     
-    # 4. LANCEMENT PROCESSUS AVEC MONITORING - v1.2 ISOLATION COMPLÈTE
+    # 4. LANCEMENT PROCESSUS AVEC MONITORING - v1.2 ISOLATION COMPLÃˆTE
     Write-Verbose "Launching AutoHotkey process with full isolation..."
     Write-LogFile "Launching AutoHotkey process" "INFO"
     $ahkProcess = Start-Process -FilePath $ahkExecutable -ArgumentList "`"$ScriptPath`"" -PassThru -WindowStyle Hidden -NoNewWindow:$false
@@ -598,14 +671,14 @@ try {
         
         # v1.2: Traiter le nouveau format de retour (objet ou texte)
         if ($windowResult -is [hashtable]) {
-            # Nouveau format v1.2 avec détection SUCCESS
+            # Nouveau format v1.2 avec dÃ©tection SUCCESS
             if ($windowResult.Status -eq "SUCCESS") {
                 Write-Verbose "SUCCESS detected: $($windowResult.Message)"
                 Write-LogFile "SUCCESS: $($windowResult.Message)" "INFO"
 
                 # Take screenshot if requested
                 if ($Screenshot) {
-                    $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "SUCCESS"
+                    $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "SUCCESS" -WindowHandle $windowResult.WindowHandle
                 }
 
                 # Calculate execution time
@@ -618,16 +691,18 @@ try {
                 Write-LogFile "ERROR detected: $($windowResult.Message)" "ERROR"
                 $errorDetected = $true
                 $errorMessage = $windowResult.Message
+                $global:ErrorWindowHandle = $windowResult.WindowHandle
             }
         } elseif ($windowResult) {
-            # Format ancien (texte simple) = ERROR détecté
+            # Format ancien (texte simple) = ERROR dÃ©tectÃ©
             Write-Verbose "Error window detected with text: $windowResult"
             Write-LogFile "Error window: $windowResult" "ERROR"
             $errorDetected = $true
             $errorMessage = $windowResult
+            $global:ErrorWindowHandle = [IntPtr]::Zero  # Ancien format n'a pas de handle
         }
         
-        # Si une erreur a été détectée, fermer le processus et arrêter
+        # Si une erreur a Ã©tÃ© dÃ©tectÃ©e, fermer le processus et arrÃªter
         if ($errorDetected) {
             # Fermer le processus AutoHotkey defaillant
             try {
@@ -658,7 +733,7 @@ try {
     if ($errorDetected) {
         # Take screenshot if requested
         if ($Screenshot -and -not $global:ScreenshotPath) {
-            $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "ERROR"
+            $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "ERROR" -WindowHandle $global:ErrorWindowHandle
         }
 
         Write-LogFile "Final status: ERROR - $errorMessage" "ERROR"
