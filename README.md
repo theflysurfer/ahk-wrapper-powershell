@@ -1,6 +1,6 @@
-﻿# AHK Wrapper PowerShell v1.4
+﻿# AHK Wrapper PowerShell v1.5
 
-> **Wrapper PowerShell pour exécution et monitoring des scripts AutoHotkey avec détection intelligente des erreurs, JSON output, logging automatique, et capture d'écran**
+> **Wrapper PowerShell pour exécution et monitoring des scripts AutoHotkey avec extraction intelligente des erreurs, JSON structuré, logging automatique, et capture d'écran**
 
 ## 🚀 Utilisation Rapide
 
@@ -21,9 +21,15 @@
 .\ahklauncher.ps1 "script.ahk" -Screenshot -ScreenshotPath "C:\screenshots"
 ```
 
-## ✅ Fonctionnalités v1.4
+## ✅ Fonctionnalités v1.5
 
-### Nouvelles fonctionnalités v1.4
+### Nouvelles fonctionnalités v1.5 (Actuel)
+- 🎯 **Smart Error Extraction** : Séparation intelligente erreur/code source/boutons
+- 🎯 **GetClassName API** : Identification des types de contrôles (Button, Static, Edit)
+- 🎯 **errorDetails** : Objet structuré avec `errorContent`, `sourceCode`, `buttons`
+- 🎯 **Multiline Parsing** : Extraction ligne par ligne avec détection de numéros de ligne
+
+### Fonctionnalités v1.4
 - ✨ **Screenshot Capture** : `-Screenshot` capture automatiquement l'écran lors SUCCESS/ERROR
 - ✨ **Custom Screenshot Path** : `-ScreenshotPath` pour dossier personnalisé (défaut: `screenshots/`)
 - ✨ **Smart Naming** : Screenshots nommés `{script}_{timestamp}_{status}.png`
@@ -64,17 +70,53 @@ TRAY_ICON: FOUND/NOT_FOUND/NOT_CHECKED
 EXECUTION_TIME: 1234ms
 ```
 
-#### Format JSON (v1.4+)
+#### Format JSON v1.5 - SUCCESS
 ```json
 {
   "status": "SUCCESS",
   "message": "Script launched successfully",
   "trayIcon": "FOUND",
-  "timestamp": "2025-10-09 23:16:53",
-  "executionTimeMs": 1234,
+  "timestamp": "2025-10-14 13:07:14",
+  "executionTimeMs": 300,
+  "scriptPath": "C:\\path\\to\\script.ahk",
+  "screenshot": "C:\\screenshots\\script_20251014_130714_SUCCESS.png"
+}
+```
+
+#### Format JSON v1.5 - ERROR avec extraction intelligente
+```json
+{
+  "status": "ERROR",
+  "message": "Error: Call to nonexistent function.\nSpecifically: FonctionInexistante()\n...",
+  "errorDetails": {
+    "title": "script.ahk",
+    "errorContent": [
+      "Error: Call to nonexistent function.",
+      "Specifically: FonctionInexistante()",
+      "The program will exit."
+    ],
+    "sourceCode": [
+      "---> 005: FonctionInexistante()",
+      "007: MsgBox,Ce message ne s'affichera jamais",
+      "008: ExitApp"
+    ],
+    "buttons": []
+  },
+  "windowHandle": "2690074",
+  "screenshot": "C:\\screenshots\\script_20251014_130714_ERROR.png",
+  "trayIcon": "NOT_FOUND",
+  "timestamp": "2025-10-14 13:07:14",
+  "executionTimeMs": 515,
   "scriptPath": "C:\\path\\to\\script.ahk"
 }
 ```
+
+**Notes v1.5**:
+- `errorDetails` : Extraction intelligente séparant erreur, code source, et boutons
+- `errorContent` : Messages d'erreur sans numéros de ligne
+- `sourceCode` : Lignes de code avec numéros (pattern: `^\s*\d{3,4}:`)
+- `buttons` : Boutons AHK détectés (6-button error: &Abort, &Help, &Edit, etc.)
+- `windowHandle` : Handle de la fenêtre pour capture ciblée
 
 ### Modes d'Exécution
 - **Silent** : Détection erreurs seulement, sortie immédiate
@@ -134,6 +176,47 @@ Write-Host "Déploiement réussi"
 .\ahklauncher.ps1 "script_problematique.ahk" -TextExtraction Full -Verbose
 # Sortie: Texte complet des fenêtres AutoHotkey pour debugging
 ```
+
+## 🤖 Pour Assistants IA (Claude Code / LLM) - v1.5
+
+### 🎯 Workflow LLM optimisé v1.5
+
+**Avec extraction intelligente `errorDetails`:**
+
+```bash
+# 1. Appeler le wrapper avec JSON + Screenshot
+output=$(powershell -ExecutionPolicy Bypass -File ahklauncher.ps1 \
+    -ScriptPath "script.ahk" \
+    -OutputFormat JSON \
+    -Screenshot 2>&1)
+
+# 2. Parser le JSON
+status=$(echo "$output" | jq -r '.status')
+
+# 3. Si ERROR: utiliser errorDetails pour diagnostic précis
+if [ "$status" = "ERROR" ]; then
+    # Lire les messages d'erreur structurés
+    error_messages=$(echo "$output" | jq -r '.errorDetails.errorContent[]')
+
+    # Lire le code source avec numéros de ligne
+    source_lines=$(echo "$output" | jq -r '.errorDetails.sourceCode[]')
+
+    # Identifier la ligne exacte à corriger
+    error_line=$(echo "$source_lines" | grep "^--->" | sed 's/.*\([0-9]\{3,4\}\):.*/\1/')
+
+    echo "Erreur ligne $error_line: $error_messages"
+
+    # 4. Lire le fichier complet, corriger, re-tester
+fi
+```
+
+**Avantages v1.5 vs v1.4:**
+- ✅ `errorContent` séparé du code → parsing direct
+- ✅ `sourceCode` avec numéros de ligne → correction précise
+- ✅ Pas besoin de regex complexe pour extraire les lignes
+- ✅ Screenshot toujours disponible comme fallback
+
+---
 
 ## 🤖 Pour Assistants IA (Claude Code / LLM)
 
@@ -361,7 +444,18 @@ Write-Host "✅ All AHK files validated"
 
 ## 🔄 Historique Versions
 
-### v1.4 (Actuel) - Screenshot Capture
+### v1.5 (Actuel) - Smart Error Extraction
+- 🎯 **Smart Error Extraction** : Séparation intelligente erreur/code source/boutons via Win32 APIs
+- 🎯 **GetClassName API** : Identification des types de contrôles (Button, Static, Edit)
+- 🎯 **errorDetails Object** : Objet structuré avec `errorContent`, `sourceCode`, `buttons`
+- 🎯 **Multiline Parsing** : Extraction ligne par ligne des contrôles Static multilignes
+- 🎯 **Line Number Detection** : Pattern matching `^\s*\d{3,4}:` pour identifier le code source
+- 🎯 **LLM-Optimized** : Workflow simplifié pour correction automatique par LLM
+- ✅ **Backward Compatible** : `message` conservé pour compatibilité v1.4
+
+Voir `wrapper_v1.5_improvements.md` pour détails techniques. Code: `Get-WindowTextSmart` (ahklauncher.ps1:480).
+
+### v1.4 (Précédent) - Screenshot Capture
 - ✨ **Screenshot Capture** : `-Screenshot` pour capturer l'écran automatiquement
 - ✨ **Custom Path** : `-ScreenshotPath` pour dossier personnalisé
 - ✨ **Smart Naming** : `{script}_{timestamp}_{status}.png`
@@ -405,4 +499,4 @@ Tous les nouveaux scripts de test doivent être ajoutés dans `tests/` avec nome
 
 ---
 
-**AHK Wrapper PowerShell v1.4** - Monitoring fiable des scripts AutoHotkey avec détection intelligente et capture d'écran
+**AHK Wrapper PowerShell v1.5** - Monitoring fiable des scripts AutoHotkey avec extraction intelligente des erreurs et capture d'écran

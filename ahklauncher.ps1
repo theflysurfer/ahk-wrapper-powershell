@@ -30,9 +30,10 @@
 )
 
 # AHK Launcher PowerShell - Script Validation AutoHotkey avec Extraction Erreurs
-# Version: 1.4 - JSON Output + Auto Logging + Screenshot Capture
-# Objectif: Validation rapide scripts AHK + extraction erreurs via APIs Windows
-# v1.3: JSON output format + automatic log file generation
+# Version: 1.5 - Smart Error Extraction with Window Class Detection
+# Objectif: Validation rapide scripts AHK + extraction erreurs intelligente via APIs Windows
+# v1.5: Smart error extraction - separate error content from buttons using GetClassName
+# v1.4: JSON output format + automatic log file generation + screenshot capture
 
 # Add-Type pour APIs Windows necessaires + EnumWindows fonctionnel
 Add-Type @'
@@ -47,6 +48,9 @@ public class Win32API {
 
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -131,6 +135,8 @@ function Write-StructuredOutput {
     param(
         [string]$Status,
         [string]$Message,
+        [hashtable]$ErrorDetails = $null,
+        [string]$WindowHandle = "",
         [string]$TrayIcon = "NOT_CHECKED",
         [string]$Timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"),
         [int]$ExecutionTimeMs = 0,
@@ -147,13 +153,27 @@ function Write-StructuredOutput {
             executionTimeMs = $ExecutionTimeMs
             scriptPath = $ScriptPath
         }
+
+        # v1.5: Add structured error details
+        if ($ErrorDetails) {
+            $result.errorDetails = $ErrorDetails
+        }
+
+        if ($WindowHandle) {
+            $result.windowHandle = $WindowHandle
+        }
+
         if ($ScreenshotFile) {
             $result.screenshot = $ScreenshotFile
         }
-        Write-Output ($result | ConvertTo-Json -Compress)
+
+        Write-Output ($result | ConvertTo-Json -Depth 5 -Compress)
     } else {
         Write-Output "STATUS: $Status"
         Write-Output "MESSAGE: $Message"
+        if ($ErrorDetails) {
+            Write-Output "ERROR_DETAILS: $($ErrorDetails | ConvertTo-Json -Compress)"
+        }
         Write-Output "TRAY_ICON: $TrayIcon"
         Write-Output "TIMESTAMP: $Timestamp"
         if ($ExecutionTimeMs -gt 0) {
@@ -192,7 +212,7 @@ function Initialize-LogFile {
         $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
         $global:LogFilePath = Join-Path $logDir "${scriptBaseName}_${timestamp}.log"
 
-        Write-LogFile "=== AHK Launcher v1.3 ===" "INFO"
+        Write-LogFile "=== AHK Launcher v1.5 ===" "INFO"
         Write-LogFile "Script: $ScriptPath" "INFO"
         Write-LogFile "Timeout: ${TimeoutMs}ms" "INFO"
         Write-LogFile "AHK Version: $AhkVersion" "INFO"
@@ -409,19 +429,40 @@ function Get-ErrorWindowText {
             # }
             
             if ($isErrorWindow) {
-                Write-Verbose "Potential error window found: '$title' - extracting full text..."
-                
-                # Extraire le texte complet de la fenetre (titre + contenu)
-                $fullText = Get-WindowTextRecursive -WindowHandle $window.Handle
-                
-                if ($fullText -and $fullText.Length -gt 10) {
-                    Write-Verbose "Successfully extracted error text: '$fullText'"
-                    return @{Status="ERROR"; Message=$fullText; WindowType="ERROR_WINDOW"; WindowHandle=$window.Handle}
+                Write-Verbose "Potential error window found: '$title' - extracting smart text..."
+
+                # v1.5: Use smart extraction with control class detection
+                $smartResult = Get-WindowTextSmart -WindowHandle $window.Handle
+
+                # Build comprehensive error message from smart extraction
+                $errorMessage = ""
+                if ($smartResult.errorContent.Count -gt 0) {
+                    $errorMessage = $smartResult.errorContent -join "`n"
+                }
+                if ($smartResult.sourceCode.Count -gt 0) {
+                    if ($errorMessage) { $errorMessage += "`n`n" }
+                    $errorMessage += "Source Code:`n" + ($smartResult.sourceCode -join "`n")
+                }
+
+                if ($errorMessage -and $errorMessage.Length -gt 10) {
+                    Write-Verbose "Successfully extracted smart error text: $($smartResult.errorContent.Count) error lines, $($smartResult.sourceCode.Count) source lines"
+                    return @{
+                        Status="ERROR"
+                        Message=$errorMessage
+                        ErrorDetails=$smartResult
+                        WindowType="ERROR_WINDOW"
+                        WindowHandle=$window.Handle
+                    }
                 }
                 else {
-                    Write-Verbose "Could not extract meaningful text from error window"
-                    # Retourner au moins le titre si on ne peut pas avoir plus
-                    return @{Status="ERROR"; Message="Error detected in window: $title"; WindowType="ERROR_WINDOW"; WindowHandle=$window.Handle}
+                    Write-Verbose "Could not extract meaningful text from error window, falling back to simple extraction"
+                    # Fallback: utiliser méthode simple
+                    $fullText = Get-WindowTextRecursive -WindowHandle $window.Handle
+                    if ($fullText) {
+                        return @{Status="ERROR"; Message=$fullText; WindowType="ERROR_WINDOW"; WindowHandle=$window.Handle}
+                    } else {
+                        return @{Status="ERROR"; Message="Error detected in window: $title"; WindowType="ERROR_WINDOW"; WindowHandle=$window.Handle}
+                    }
                 }
             }
         }        
@@ -435,11 +476,96 @@ function Get-ErrorWindowText {
     }
 }
 
+# v1.5: Smart text extraction with control class detection
+function Get-WindowTextSmart {
+    param([IntPtr]$WindowHandle)
+
+    $result = @{
+        title = ""
+        errorContent = @()
+        sourceCode = @()
+        buttons = @()
+    }
+
+    # Titre de la fenêtre
+    $titleBuffer = New-Object System.Text.StringBuilder(512)
+    [Win32API]::GetWindowText($WindowHandle, $titleBuffer, $titleBuffer.Capacity) | Out-Null
+    $result.title = $titleBuffer.ToString()
+
+    # Parcourir tous les contrôles enfants
+    $childWindow = [Win32API]::GetWindow($WindowHandle, [Win32API]::GW_CHILD)
+    $orderIndex = 0
+
+    while ($childWindow -ne [IntPtr]::Zero) {
+        # Obtenir la classe du contrôle
+        $classBuffer = New-Object System.Text.StringBuilder(256)
+        [Win32API]::GetClassName($childWindow, $classBuffer, $classBuffer.Capacity) | Out-Null
+        $className = $classBuffer.ToString()
+
+        # Obtenir le texte du contrôle (buffer plus grand pour Edit)
+        $textBuffer = New-Object System.Text.StringBuilder(4096)
+        $textLength = [Win32API]::GetWindowText($childWindow, $textBuffer, $textBuffer.Capacity)
+
+        if ($textLength -gt 0) {
+            $text = $textBuffer.ToString().Trim()
+
+            Write-Verbose "Control [$orderIndex]: Class='$className', Text='$text'"
+
+            # Classifier selon le type de contrôle
+            if ($className -eq "Button") {
+                # C'est un bouton
+                if ($text -match "^(&Abort|&Help|&Edit|&Reload|E&xitApp|&Continue)$") {
+                    $result.buttons += $text
+                }
+            }
+            elseif ($className -eq "Static") {
+                # C'est un contrôle Static (texte statique, peut être multiline)
+                if ($text.Length -gt 3 -and $text -notmatch "^(OK|Cancel)$") {
+                    # Split by newlines to process each line individually
+                    $lines = $text -split "`r?`n"
+                    foreach ($line in $lines) {
+                        $line = $line.Trim()
+                        if ($line.Length -gt 0) {
+                            # Identifier si c'est du code source (ligne commençant par numéro)
+                            if ($line -match "^\s*\d{3,4}:" -or $line -match "^--->\s*\d{3,4}:") {
+                                $result.sourceCode += $line
+                            } elseif ($line -notmatch "^(Line#|Line\s*#)$") {
+                                # Ignorer les séparateurs comme "Line#"
+                                $result.errorContent += $line
+                            }
+                        }
+                    }
+                }
+            }
+            elseif ($className -eq "Edit") {
+                # C'est un contrôle Edit (peut contenir code source multilignes)
+                $lines = $text -split "`r?`n"
+                foreach ($line in $lines) {
+                    $line = $line.Trim()
+                    if ($line.Length -gt 0) {
+                        if ($line -match "^\s*\d{3,4}:") {
+                            $result.sourceCode += $line
+                        } else {
+                            $result.errorContent += $line
+                        }
+                    }
+                }
+            }
+        }
+
+        $childWindow = [Win32API]::GetWindow($childWindow, [Win32API]::GW_HWNDNEXT)
+        $orderIndex++
+    }
+
+    Write-Verbose "Smart extraction result: $($result.errorContent.Count) error lines, $($result.sourceCode.Count) source lines, $($result.buttons.Count) buttons"
+    return $result
+}
+
 function Get-WindowTextRecursive {
     param([IntPtr]$WindowHandle)
-    
+
     $allText = ""
-    
+
     # Texte de la fenetre principale
     $buffer = New-Object System.Text.StringBuilder(512)
     $length = [Win32API]::GetWindowText($WindowHandle, $buffer, $buffer.Capacity)
@@ -449,39 +575,42 @@ function Get-WindowTextRecursive {
             $allText += $mainText + " | "
         }
     }
-    
+
     # Parcourir tous les controles enfants
     $childWindow = [Win32API]::GetWindow($WindowHandle, [Win32API]::GW_CHILD)
-    
+
     while ($childWindow -ne [IntPtr]::Zero) {
         $buffer = New-Object System.Text.StringBuilder(512)
         $length = [Win32API]::GetWindowText($childWindow, $buffer, $buffer.Capacity)
-        
+
         if ($length -gt 0) {
             $text = $buffer.ToString().Trim()
-            Write-Verbose "Found child window text: '$text'"            
-            # Filtrer le texte significatif 
+            Write-Verbose "Found child window text: '$text'"
+            # Filtrer le texte significatif
             if ($text -and $text.Length -gt 3 -and $text -notmatch "^(OK|Cancel|&OK|&Cancel|Button)$") {
                 $allText += $text + " | "
             }
         }
-        
+
         $childWindow = [Win32API]::GetWindow($childWindow, [Win32API]::GW_HWNDNEXT)
     }
-    
+
     # Nettoyer et retourner le texte
     $allText = $allText.TrimEnd(" | ").Trim()
-    if ($allText) { 
-        return $allText 
-    } else { 
-        return $null 
+    if ($allText) {
+        return $allText
+    } else {
+        return $null
     }
 }
 
 function Test-TrayIconPresent {
     # Implementation basique : verifier si des processus AutoHotkey sont toujours actifs
     $ahkProcesses = Get-Process | Where-Object { $_.ProcessName -like "*AutoHotkey*" }
-    return if ($ahkProcesses) { "FOUND" } else { "NOT_FOUND" }
+    if ($ahkProcesses -and $ahkProcesses.Count -gt 0) {
+        return "FOUND"
+    }
+    return "NOT_FOUND"
 }
 
 function Take-Screenshot {
@@ -584,15 +713,16 @@ try {
     # Initialize log file if requested
     Initialize-LogFile
 
-    Write-Verbose "Starting AHK Launcher v1.4 - Script: $ScriptPath, Timeout: ${TimeoutMs}ms"
-    Write-LogFile "Starting AHK Launcher" "INFO"
+    Write-Verbose "Starting AHK Launcher v1.5 - Script: $ScriptPath, Timeout: ${TimeoutMs}ms"
+    Write-LogFile "Starting AHK Launcher v1.5" "INFO"
 
     # Track execution time
     $global:ExecutionStartTime = Get-Date
 
-    # Initialize screenshot path and error window handle
+    # Initialize screenshot path, error window handle, and error details
     $global:ScreenshotPath = $null
     $global:ErrorWindowHandle = [IntPtr]::Zero
+    $global:ErrorDetails = $null
     $scriptBaseName = [System.IO.Path]::GetFileNameWithoutExtension((Split-Path -Leaf $ScriptPath))
 
     # 1. VALIDATION PARAMETRES
@@ -692,6 +822,7 @@ try {
                 $errorDetected = $true
                 $errorMessage = $windowResult.Message
                 $global:ErrorWindowHandle = $windowResult.WindowHandle
+                $global:ErrorDetails = $windowResult.ErrorDetails
             }
         } elseif ($windowResult) {
             # Format ancien (texte simple) = ERROR dÃ©tectÃ©
@@ -738,7 +869,7 @@ try {
 
         Write-LogFile "Final status: ERROR - $errorMessage" "ERROR"
         Write-LogFile "Total execution time: ${execTime}ms" "INFO"
-        Write-StructuredOutput -Status "ERROR" -Message $errorMessage -TrayIcon "NOT_FOUND" -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
+        Write-StructuredOutput -Status "ERROR" -Message $errorMessage -ErrorDetails $global:ErrorDetails -WindowHandle $global:ErrorWindowHandle -TrayIcon "NOT_FOUND" -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
         exit 1
     }
     elseif ($timeoutReached) {
