@@ -488,21 +488,36 @@ function Test-AutohotkeyAvailable {
 }
 
 function Get-ErrorWindowText {
+    param(
+        [int]$ProcessId = 0  # v1.7: Optionnel - filtrer par PID du processus AHK
+    )
+
     # NOUVELLE APPROCHE: Enumeration complete et efficace de toutes les fenetres
     Write-Verbose "Enumerating all visible windows using Win32API.EnumerateWindows()..."
-    
+
     try {
         # Vider la liste et enumerer toutes les fenetres visibles
         [Win32API]::EnumerateWindows()
-        
+
         # Nom du script pour recherche ciblee
         $scriptName = Split-Path -Leaf $ScriptPath
         $scriptBaseName = $scriptName.Replace(".ahk", "")
-        
-        Write-Verbose "Found $([Win32API]::FoundWindows.Count) visible windows"        
+
+        Write-Verbose "Found $([Win32API]::FoundWindows.Count) visible windows (filtering by PID: $ProcessId)"
         # Chercher les fenetres qui correspondent a notre script d'erreur
         foreach ($window in [Win32API]::FoundWindows) {
             $title = $window.Title
+
+            # v1.7: Filtrer par PID si spécifié
+            if ($ProcessId -gt 0) {
+                $windowPid = 0
+                [Win32API]::GetWindowThreadProcessId($window.Handle, [ref]$windowPid) | Out-Null
+                if ($windowPid -ne $ProcessId) {
+                    # Cette fenêtre n'appartient pas à notre processus AHK, ignorer
+                    continue
+                }
+            }
+
             Write-Verbose "Inspecting window: '$title' (Handle: $($window.Handle))"
             
             # Correspondances possibles pour fenetres d'erreur AutoHotkey
@@ -973,10 +988,10 @@ try {
             break
         }
         
-        # Rechercher fenetres d'erreur (polling plus frequent) - v1.2 DETECTION INTELLIGENTE
+        # Rechercher fenetres d'erreur (polling plus frequent) - v1.7 DETECTION PAR PID
         $elapsed = (Get-Date) - $startTime
         Write-Verbose "Checking for error windows... (elapsed: $($elapsed.TotalMilliseconds)ms)"
-        $windowResult = Get-ErrorWindowText
+        $windowResult = Get-ErrorWindowText -ProcessId $ahkProcess.Id
         
         # v1.2: Traiter le nouveau format de retour (objet ou texte)
         if ($windowResult -is [hashtable]) {
