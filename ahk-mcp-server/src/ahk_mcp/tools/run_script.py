@@ -44,11 +44,12 @@ async def ahk_run_script(
         version = "Auto"
 
     # Run the script through PowerShell wrapper
+    # v1.8.1: Disable screenshot for faster returns - use ahk_capture_ui for screenshots
     result = await run_ahk_launcher(
         script_path=script_path,
         version=version,
         timeout_ms=timeout_ms,
-        screenshot=True  # Always capture screenshot on error
+        screenshot=False  # Disabled for speed - use ahk_capture_ui separately
     )
 
     # Format response for LLM consumption
@@ -125,6 +126,15 @@ async def ahk_run_script(
             "",
             "Use `ahk_capture_ui` to take a screenshot of the running script's UI."
         ])
+
+    elif status == "RUNNING":
+        response_lines.extend([
+            "",
+            "The script is running as a persistent/background script.",
+            f"Tray Icon: {tray_icon}",
+        ])
+        if window_handle:
+            response_lines.append(f"Window Handle: {window_handle} (use with ahk_capture_ui to screenshot the UI)")
 
     else:  # CONFIG_ERROR
         response_lines.extend([

@@ -43,6 +43,10 @@ def _build_ps_command(
 
 def _parse_json_output(stdout: str, stderr: str) -> dict:
     """Parse JSON output from PowerShell wrapper."""
+    # Strip UTF-8 BOM if present (PowerShell adds it with -Encoding UTF8)
+    if stdout.startswith('\ufeff'):
+        stdout = stdout[1:]
+
     # The wrapper outputs JSON on the last line
     lines = stdout.strip().split('\n')
 
@@ -50,6 +54,9 @@ def _parse_json_output(stdout: str, stderr: str) -> dict:
     json_line = None
     for line in reversed(lines):
         line = line.strip()
+        # Also handle BOM on individual lines
+        if line.startswith('\ufeff'):
+            line = line[1:]
         if line.startswith('{'):
             json_line = line
             break
@@ -121,33 +128,62 @@ async def run_ahk_launcher(
     # Calculate subprocess timeout (add buffer for PS startup)
     subprocess_timeout = (timeout_ms / 1000) + 10
 
+    # Use temp file for output to avoid pipe inheritance issues with child processes
+    import tempfile
+    import os
+
+    output_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8')
+    output_file.close()
+    output_path = output_file.name
+
+    # Add output redirection to temp file
+    cmd_with_redirect = cmd + ['-OutputFile', output_path]
+
     try:
-        # Run in thread to avoid blocking
-        result = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=subprocess_timeout,
+        # Run without capturing output - the script writes JSON to the temp file
+        process = subprocess.Popen(
+            cmd_with_redirect,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
         )
 
-        logger.debug(f"Exit code: {result.returncode}")
-        logger.debug(f"Stdout: {result.stdout[:500] if result.stdout else 'None'}")
-        if result.stderr:
-            logger.debug(f"Stderr: {result.stderr[:500]}")
+        try:
+            exit_code = await asyncio.wait_for(
+                asyncio.to_thread(process.wait),
+                timeout=subprocess_timeout
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            process.wait()
+            # Try to read partial output from temp file
+            try:
+                if os.path.exists(output_path):
+                    with open(output_path, 'r', encoding='utf-8') as f:
+                        stdout = f.read()
+                    if stdout.strip():
+                        return _parse_json_output(stdout, "")
+            except Exception:
+                pass
+            # No output found, return timeout
+            return {
+                "status": "TIMEOUT",
+                "message": f"PowerShell wrapper timed out after {subprocess_timeout}s",
+                "executionTimeMs": int(subprocess_timeout * 1000),
+                "scriptPath": script_path
+            }
 
-        return _parse_json_output(result.stdout or "", result.stderr or "")
+        # Read output from temp file
+        stdout = ""
+        if os.path.exists(output_path):
+            with open(output_path, 'r', encoding='utf-8') as f:
+                stdout = f.read()
 
-    except subprocess.TimeoutExpired:
-        logger.error(f"Subprocess timeout after {subprocess_timeout}s")
-        return {
-            "status": "TIMEOUT",
-            "message": f"PowerShell wrapper timed out after {subprocess_timeout}s",
-            "executionTimeMs": int(subprocess_timeout * 1000),
-            "scriptPath": script_path
-        }
+        logger.debug(f"Exit code: {exit_code}")
+        logger.debug(f"Stdout: {stdout[:500] if stdout else 'None'}")
+
+        return _parse_json_output(stdout or "", "")
+
     except Exception as e:
         logger.exception(f"Error running wrapper: {e}")
         return {
@@ -156,6 +192,13 @@ async def run_ahk_launcher(
             "executionTimeMs": 0,
             "scriptPath": script_path
         }
+    finally:
+        # Cleanup temp file
+        try:
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+        except Exception:
+            pass
 
 
 async def capture_window_screenshot(

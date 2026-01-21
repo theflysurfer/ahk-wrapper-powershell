@@ -26,12 +26,20 @@
     [switch]$Screenshot,
 
     [Parameter(Mandatory=$false)]
-    [string]$ScreenshotPath = ""
+    [string]$ScreenshotPath = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$OutputFile = ""  # v1.8.1: Write JSON to file instead of stdout (for MCP pipe issues)
 )
 
 # AHK Launcher PowerShell - Script Validation AutoHotkey avec Extraction Erreurs
-# Version: 1.5 - Smart Error Extraction with Window Class Detection
+# Version: 1.8.2 - Handle scripts that launch child processes
 # Objectif: Validation rapide scripts AHK + extraction erreurs intelligente via APIs Windows
+# v1.8.2: Handle scripts that exit with code 0 (spawning child processes) - immediate SUCCESS
+# v1.8.1: -OutputFile parameter to write JSON to file (avoids pipe inheritance issues with MCP)
+# v1.8: Early exit for persistent scripts (2s stable = RUNNING status)
+# v1.7.1: Force array output in PID-based window filtering
+# v1.7: PID-based window detection to filter by AHK process
 # v1.5: Smart error extraction - separate error content from buttons using GetClassName
 # v1.4: JSON output format + automatic log file generation + screenshot capture
 
@@ -171,7 +179,13 @@ function Write-StructuredOutput {
             $result.screenshot = $ScreenshotFile
         }
 
-        Write-Output ($result | ConvertTo-Json -Depth 5 -Compress)
+        # v1.8.1: Write to file if OutputFile specified (avoids pipe inheritance issues)
+        $jsonOutput = $result | ConvertTo-Json -Depth 5 -Compress
+        if ($OutputFile) {
+            $jsonOutput | Out-File -FilePath $OutputFile -Encoding UTF8 -Force
+        } else {
+            Write-Output $jsonOutput
+        }
     } else {
         Write-Output "STATUS: $Status"
         Write-Output "MESSAGE: $Message"
@@ -1097,20 +1111,28 @@ try {
             break
         }
 
-        # v1.8: Early exit pour scripts persistants
-        # Si le process tourne depuis >1.5s sans erreur et qu'un tray icon ou sous-process existe
+        # v1.8.1: Early exit pour scripts persistants
+        # Si le process tourne depuis >2s sans erreur = script persistant (tray icon, GUI, etc.)
         $elapsed = (Get-Date) - $startTime
-        if ($elapsed.TotalMilliseconds -ge 1500 -and -not $errorDetected -and -not $ahkProcess.HasExited) {
-            # Vérifier si d'autres processus AHK sont lancés (sous-processes)
-            $allAhkProcesses = @(Get-Process -Name "AutoHotkey*" -ErrorAction SilentlyContinue)
-            $hasChildProcesses = $allAhkProcesses.Count -gt 1
+        if ($elapsed.TotalMilliseconds -ge 2000 -and -not $errorDetected -and -not $ahkProcess.HasExited) {
+            Write-Verbose "Early exit: Script stable for $($elapsed.TotalMilliseconds)ms - persistent script"
+            Write-LogFile "Early exit: Stable persistent script detected after $($elapsed.TotalMilliseconds)ms" "INFO"
 
-            if ($hasChildProcesses) {
-                Write-Verbose "Early exit: Script stable for $($elapsed.TotalMilliseconds)ms with child processes"
-                Write-LogFile "Early exit: Stable persistent script detected" "INFO"
+            $execTime = [int]((Get-Date) - $global:ExecutionStartTime).TotalMilliseconds
+            Write-StructuredOutput -Status "RUNNING" -Message "Script is running (persistent script)" -TrayIcon "FOUND" -ExecutionTimeMs $execTime -Format $OutputFormat
+            exit 0
+        }
+
+        # v1.8.2: Handle scripts that launch child processes and exit immediately
+        # If parent process exited with code 0 and no error detected, consider it SUCCESS
+        if ($ahkProcess.HasExited -and -not $errorDetected) {
+            $exitCode = $ahkProcess.ExitCode
+            if ($exitCode -eq 0) {
+                Write-Verbose "Parent process exited with code 0 - script launched successfully (may have spawned child processes)"
+                Write-LogFile "SUCCESS: Parent process exited cleanly (exit code 0), likely spawned child process" "INFO"
 
                 $execTime = [int]((Get-Date) - $global:ExecutionStartTime).TotalMilliseconds
-                Write-StructuredOutput -Status "RUNNING" -Message "Script is running (persistent script with child processes)" -TrayIcon "FOUND" -ExecutionTimeMs $execTime -Format $OutputFormat
+                Write-StructuredOutput -Status "SUCCESS" -Message "Script launched successfully (parent exited, may have child processes)" -TrayIcon "NOT_CHECKED" -ExecutionTimeMs $execTime -Format $OutputFormat
                 exit 0
             }
         }
