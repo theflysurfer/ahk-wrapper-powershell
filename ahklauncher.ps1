@@ -1095,15 +1095,33 @@ try {
                 Write-Verbose "Could not terminate process cleanly"
             }
             break
-        }        
-        # Verifier timeout
+        }
+
+        # v1.8: Early exit pour scripts persistants
+        # Si le process tourne depuis >1.5s sans erreur et qu'un tray icon ou sous-process existe
         $elapsed = (Get-Date) - $startTime
+        if ($elapsed.TotalMilliseconds -ge 1500 -and -not $errorDetected -and -not $ahkProcess.HasExited) {
+            # Vérifier si d'autres processus AHK sont lancés (sous-processes)
+            $allAhkProcesses = @(Get-Process -Name "AutoHotkey*" -ErrorAction SilentlyContinue)
+            $hasChildProcesses = $allAhkProcesses.Count -gt 1
+
+            if ($hasChildProcesses) {
+                Write-Verbose "Early exit: Script stable for $($elapsed.TotalMilliseconds)ms with child processes"
+                Write-LogFile "Early exit: Stable persistent script detected" "INFO"
+
+                $execTime = [int]((Get-Date) - $global:ExecutionStartTime).TotalMilliseconds
+                Write-StructuredOutput -Status "RUNNING" -Message "Script is running (persistent script with child processes)" -TrayIcon "FOUND" -ExecutionTimeMs $execTime -Format $OutputFormat
+                exit 0
+            }
+        }
+
+        # Verifier timeout
         if ($elapsed.TotalMilliseconds -ge $TimeoutMs) {
             $timeoutReached = $true
             Write-Verbose "Timeout reached after $($elapsed.TotalMilliseconds)ms"
             break
         }
-        
+
         Start-Sleep -Milliseconds 50
     }
     
