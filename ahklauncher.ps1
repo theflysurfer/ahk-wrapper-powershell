@@ -1050,9 +1050,10 @@ try {
             # Utile pour les scripts GUI avec titres personnalisés (ex: "Better Transcription")
             if (-not $ahkProcess.HasExited) {
                 $processWindows = Get-ProcessWindows -ProcessId $ahkProcess.Id
-                $nonErrorWindows = $processWindows | Where-Object { -not $_.IsError }
+                # v1.7.1: Forcer array pour éviter unwrapping PowerShell
+                $nonErrorWindows = @($processWindows | Where-Object { -not $_.IsError })
 
-                if ($nonErrorWindows -and $nonErrorWindows.Count -gt 0) {
+                if ($nonErrorWindows.Count -gt 0) {
                     $firstWindow = $nonErrorWindows[0]
                     Write-Verbose "SUCCESS: Found GUI window by PID: $($firstWindow.Title)"
                     Write-LogFile "SUCCESS window found by PID: $($firstWindow.Title)" "INFO"
@@ -1070,8 +1071,8 @@ try {
                 }
 
                 # Vérifier si une fenêtre d'erreur a été trouvée par PID
-                $errorWindows = $processWindows | Where-Object { $_.IsError }
-                if ($errorWindows -and $errorWindows.Count -gt 0) {
+                $errorWindows = @($processWindows | Where-Object { $_.IsError })
+                if ($errorWindows.Count -gt 0) {
                     $errorWin = $errorWindows[0]
                     Write-Verbose "ERROR window found by PID: $($errorWin.Title)"
                     $errorDetected = $true
