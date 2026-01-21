@@ -34,8 +34,13 @@ async def ahk_run_script(
     """
     logger.info(f"ahk_run_script called: {script_path} (version={version}, timeout={timeout_ms})")
 
-    # Validate version parameter
-    if version not in ("V1", "V2", "Auto"):
+    # Normalize and validate version parameter (case-insensitive)
+    version_upper = version.upper() if version else "AUTO"
+    if version_upper in ("V1", "1"):
+        version = "V1"
+    elif version_upper in ("V2", "2"):
+        version = "V2"
+    else:
         version = "Auto"
 
     # Run the script through PowerShell wrapper

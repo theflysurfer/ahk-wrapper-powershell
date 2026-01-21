@@ -68,6 +68,10 @@ public class Win32API {
     [DllImport("user32.dll")]
     public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
 
+    // v1.7: GetWindowThreadProcessId pour trouver les fenêtres d'un processus spécifique
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
     // Screenshot APIs - Capture de fenÃªtre spÃ©cifique
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
@@ -341,6 +345,73 @@ function Test-WindowIsSuccess {
     } catch {
         Write-Verbose "Error checking for success window: $($_.Exception.Message)"
         return @{ Found = $false }
+    }
+}
+
+# v1.7: Fonction pour détecter les fenêtres appartenant à un processus spécifique (par PID)
+# Utile pour les scripts GUI avec titres personnalisés qui ne contiennent pas le nom du script
+function Get-ProcessWindows {
+    param(
+        [int]$ProcessId
+    )
+
+    try {
+        # Énumérer toutes les fenêtres visibles
+        [Win32API]::EnumerateWindows()
+
+        $processWindows = @()
+
+        foreach ($win in [Win32API]::FoundWindows) {
+            # Obtenir le PID de la fenêtre
+            $windowPid = 0
+            [Win32API]::GetWindowThreadProcessId($win.Handle, [ref]$windowPid) | Out-Null
+
+            if ($windowPid -eq $ProcessId) {
+                # Vérifier que ce n'est PAS une fenêtre d'erreur
+                $hasErrorButtons = Test-WindowHasErrorButtons -WindowHandle $win.Handle
+
+                # Vérifier le contenu textuel pour les erreurs
+                $windowText = Get-WindowTextRecursive -WindowHandle $win.Handle
+                $hasErrorContent = $false
+
+                if ($windowText) {
+                    $errorPatterns = @(
+                        "(?i)Error at line",
+                        "(?i)Error in #include",
+                        "(?i)requires AutoHotkey",
+                        "(?i)syntax error",
+                        "(?i)runtime error",
+                        "(?i)fatal error",
+                        "(?i)The program will exit",
+                        "(?i)Current interpreter:"
+                    )
+
+                    foreach ($pattern in $errorPatterns) {
+                        if ($windowText -match $pattern) {
+                            $hasErrorContent = $true
+                            break
+                        }
+                    }
+                }
+
+                $isError = $hasErrorButtons -or $hasErrorContent
+
+                $processWindows += @{
+                    Handle = $win.Handle
+                    Title = $win.Title
+                    IsError = $isError
+                    WindowText = $windowText
+                }
+
+                Write-Verbose "Found window for PID $ProcessId : '$($win.Title)' (IsError: $isError)"
+            }
+        }
+
+        return $processWindows
+
+    } catch {
+        Write-Verbose "Error getting process windows: $($_.Exception.Message)"
+        return @()
     }
 }
 
@@ -958,6 +1029,40 @@ try {
                 Write-StructuredOutput -Status "SUCCESS" -Message "Script window detected: $($successWindow.Title)" -WindowHandle $successWindow.Handle -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
                 Write-LogFile "Total execution time: ${execTime}ms" "INFO"
                 exit 0
+            }
+
+            # v1.7: Fallback - chercher les fenêtres du processus AHK par PID
+            # Utile pour les scripts GUI avec titres personnalisés (ex: "Better Transcription")
+            if (-not $ahkProcess.HasExited) {
+                $processWindows = Get-ProcessWindows -ProcessId $ahkProcess.Id
+                $nonErrorWindows = $processWindows | Where-Object { -not $_.IsError }
+
+                if ($nonErrorWindows -and $nonErrorWindows.Count -gt 0) {
+                    $firstWindow = $nonErrorWindows[0]
+                    Write-Verbose "SUCCESS: Found GUI window by PID: $($firstWindow.Title)"
+                    Write-LogFile "SUCCESS window found by PID: $($firstWindow.Title)" "INFO"
+
+                    # Take screenshot if requested
+                    if ($Screenshot) {
+                        $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "SUCCESS" -WindowHandle $firstWindow.Handle
+                    }
+
+                    # Calculate execution time
+                    $execTime = [int]((Get-Date) - $global:ExecutionStartTime).TotalMilliseconds
+                    Write-StructuredOutput -Status "SUCCESS" -Message "Script GUI window detected: $($firstWindow.Title)" -WindowHandle $firstWindow.Handle -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
+                    Write-LogFile "Total execution time: ${execTime}ms" "INFO"
+                    exit 0
+                }
+
+                # Vérifier si une fenêtre d'erreur a été trouvée par PID
+                $errorWindows = $processWindows | Where-Object { $_.IsError }
+                if ($errorWindows -and $errorWindows.Count -gt 0) {
+                    $errorWin = $errorWindows[0]
+                    Write-Verbose "ERROR window found by PID: $($errorWin.Title)"
+                    $errorDetected = $true
+                    $errorMessage = $errorWin.WindowText
+                    $global:ErrorWindowHandle = $errorWin.Handle
+                }
             }
         }
 
