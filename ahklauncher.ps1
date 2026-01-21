@@ -264,10 +264,83 @@ function Test-WindowHasErrorButtons {
         
         Write-Verbose "Window buttons found: $($allChildTexts -join ', ') | Error buttons: $errorButtonsFound/$($ErrorButtons.Count) | IsError: $isErrorWindow"
         return $isErrorWindow
-        
+
     } catch {
         Write-Verbose "Error checking window buttons: $($_.Exception.Message)"
         return $false
+    }
+}
+
+# v1.6: Fonction pour détecter une fenêtre SUCCESS (fenêtre du script SANS contenu erreur)
+function Test-WindowIsSuccess {
+    param(
+        [string]$ScriptName
+    )
+
+    try {
+        # Énumérer toutes les fenêtres visibles via Win32API
+        [Win32API]::EnumerateWindows()
+
+        foreach ($win in [Win32API]::FoundWindows) {
+            # Vérifier si le titre contient le nom du script
+            if ($win.Title -like "*$ScriptName*") {
+                # Vérifier que ce n'est PAS une fenêtre d'erreur via les boutons
+                $hasErrorButtons = Test-WindowHasErrorButtons -WindowHandle $win.Handle
+
+                if ($hasErrorButtons) {
+                    Write-Verbose "Window has error buttons, skipping: $($win.Title)"
+                    continue
+                }
+
+                # v1.6.1: Vérifier aussi le CONTENU textuel pour détecter les erreurs sans boutons typiques
+                # (ex: "Error at line", "requires AutoHotkey v2", etc.)
+                $windowText = Get-WindowTextRecursive -WindowHandle $win.Handle
+                $hasErrorContent = $false
+
+                if ($windowText) {
+                    # Patterns d'erreur AHK (même sans boutons d'erreur typiques)
+                    $errorPatterns = @(
+                        "(?i)Error at line",
+                        "(?i)Error in #include",
+                        "(?i)requires AutoHotkey",
+                        "(?i)syntax error",
+                        "(?i)runtime error",
+                        "(?i)fatal error",
+                        "(?i)access violation",
+                        "(?i)division by zero",
+                        "(?i)invalid memory",
+                        "(?i)The program will exit",
+                        "(?i)Script exited",
+                        "(?i)Current interpreter:"
+                    )
+
+                    foreach ($pattern in $errorPatterns) {
+                        if ($windowText -match $pattern) {
+                            Write-Verbose "Window contains error text pattern '$pattern': $windowText"
+                            $hasErrorContent = $true
+                            break
+                        }
+                    }
+                }
+
+                if (-not $hasErrorContent) {
+                    Write-Verbose "SUCCESS window found: $($win.Title) (Handle: $($win.Handle))"
+                    return @{
+                        Found = $true
+                        Handle = $win.Handle
+                        Title = $win.Title
+                    }
+                } else {
+                    Write-Verbose "Window has error content, not SUCCESS: $($win.Title)"
+                }
+            }
+        }
+
+        return @{ Found = $false }
+
+    } catch {
+        Write-Verbose "Error checking for success window: $($_.Exception.Message)"
+        return @{ Found = $false }
     }
 }
 
@@ -391,20 +464,55 @@ function Get-ErrorWindowText {
                 Write-Verbose "MATCH: AutoHotkey specific match for '$title'"
                 $isErrorWindow = $true
             }
-            # 3. Titre contient le nom du script - VÃ‰RIFICATION INTELLIGENTE v1.2
-            elseif ($title.Contains($scriptBaseName) -and $title.Length -lt 50) {
+            # 3. Titre contient le nom du script - VÉRIFICATION INTELLIGENTE v1.6
+            elseif ($title.Contains($scriptBaseName) -and $title.Length -lt 100) {
                 Write-Verbose "POTENTIAL: Script basename match for '$title' - checking if error window..."
-                
-                # CORRECTION CRITIQUE v1.2: VÃ©rifier si c'est vraiment une erreur via les boutons
+
+                # v1.2: Vérifier si c'est vraiment une erreur via les boutons
                 $hasErrorButtons = Test-WindowHasErrorButtons -WindowHandle $window.Handle
-                
+
                 if ($hasErrorButtons) {
                     Write-Verbose "CONFIRMED: This is an error window with buttons: '$title'"
                     $isErrorWindow = $true
                 } else {
-                    Write-Verbose "SUCCESS: This is a normal script window, not an error: '$title'"
-                    # C'est une fenÃªtre normale du script = SUCCESS
-                    return @{Status="SUCCESS"; Message="Script window detected: $title"; WindowType="SUCCESS_WINDOW"; WindowHandle=$window.Handle}
+                    # v1.6: Vérifier aussi le CONTENU textuel pour détecter les erreurs sans boutons typiques
+                    $windowText = Get-WindowTextRecursive -WindowHandle $window.Handle
+                    $hasErrorContent = $false
+
+                    if ($windowText) {
+                        # Patterns d'erreur AHK (même sans boutons d'erreur typiques)
+                        $errorPatterns = @(
+                            "(?i)Error at line",
+                            "(?i)Error in #include",
+                            "(?i)requires AutoHotkey",
+                            "(?i)syntax error",
+                            "(?i)runtime error",
+                            "(?i)fatal error",
+                            "(?i)access violation",
+                            "(?i)division by zero",
+                            "(?i)invalid memory",
+                            "(?i)The program will exit",
+                            "(?i)Script exited",
+                            "(?i)Current interpreter:"
+                        )
+
+                        foreach ($pattern in $errorPatterns) {
+                            if ($windowText -match $pattern) {
+                                Write-Verbose "Window contains error text pattern '$pattern': $windowText"
+                                $hasErrorContent = $true
+                                break
+                            }
+                        }
+                    }
+
+                    if ($hasErrorContent) {
+                        Write-Verbose "CONFIRMED: This is an error window with error text content: '$title'"
+                        $isErrorWindow = $true
+                    } else {
+                        Write-Verbose "SUCCESS: This is a normal script window, not an error: '$title'"
+                        # C'est une fenêtre normale du script = SUCCESS
+                        return @{Status="SUCCESS"; Message="Script window detected: $title"; WindowType="SUCCESS_WINDOW"; WindowHandle=$window.Handle}
+                    }
                 }
             }
             # 4. DÃ‰SACTIVÃ‰E TEMPORAIREMENT: DÃ©tection gÃ©nÃ©rale trop permissive (faux positifs)
@@ -833,7 +941,27 @@ try {
             $global:ErrorWindowHandle = [IntPtr]::Zero  # Ancien format n'a pas de handle
         }
         
-        # Si une erreur a Ã©tÃ© dÃ©tectÃ©e, fermer le processus et arrÃªter
+        # v1.6: Vérifier si une fenêtre SUCCESS (non-erreur) est présente
+        if (-not $errorDetected) {
+            $successWindow = Test-WindowIsSuccess -ScriptName $scriptBaseName
+            if ($successWindow.Found) {
+                Write-Verbose "SUCCESS window detected: $($successWindow.Title)"
+                Write-LogFile "SUCCESS window detected: $($successWindow.Title)" "INFO"
+
+                # Take screenshot if requested
+                if ($Screenshot) {
+                    $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "SUCCESS" -WindowHandle $successWindow.Handle
+                }
+
+                # Calculate execution time
+                $execTime = [int]((Get-Date) - $global:ExecutionStartTime).TotalMilliseconds
+                Write-StructuredOutput -Status "SUCCESS" -Message "Script window detected: $($successWindow.Title)" -WindowHandle $successWindow.Handle -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
+                Write-LogFile "Total execution time: ${execTime}ms" "INFO"
+                exit 0
+            }
+        }
+
+        # Si une erreur a été détectée, fermer le processus et arrêter
         if ($errorDetected) {
             # Fermer le processus AutoHotkey defaillant
             try {
@@ -873,17 +1001,34 @@ try {
         exit 1
     }
     elseif ($timeoutReached) {
-        # Take screenshot if requested
-        if ($Screenshot) {
-            $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "SUCCESS"
-        }
+        # v1.6: Distinguer RUNNING (process actif) vs TIMEOUT (process terminé sans fenêtre)
+        if (-not $ahkProcess.HasExited) {
+            # Process still running = persistent script (tray icon, GUI, etc.)
+            $trayStatus = Test-TrayIconPresent
 
-        # Timeout atteint - probable succes (script lance, pas d'erreur detectee)
-        $trayStatus = Test-TrayIconPresent
-        Write-LogFile "Timeout reached - assuming success" "INFO"
-        Write-LogFile "Total execution time: ${execTime}ms" "INFO"
-        Write-StructuredOutput -Status "SUCCESS" -Message "Script launched successfully (no error detected within timeout)" -TrayIcon $trayStatus -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
-        exit 0
+            # Take screenshot if requested
+            if ($Screenshot) {
+                $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "RUNNING"
+            }
+
+            Write-LogFile "Process still running - persistent script (RUNNING)" "INFO"
+            Write-LogFile "Total execution time: ${execTime}ms" "INFO"
+            Write-StructuredOutput -Status "RUNNING" -Message "Script is running (persistent script with tray icon or GUI)" -TrayIcon $trayStatus -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
+            exit 0
+        } else {
+            # Process terminated but no window detected = TIMEOUT (indeterminate)
+            $trayStatus = Test-TrayIconPresent
+
+            # Take screenshot if requested
+            if ($Screenshot) {
+                $global:ScreenshotPath = Take-Screenshot -OutputPath $ScreenshotPath -ScriptName $scriptBaseName -Status "TIMEOUT"
+            }
+
+            Write-LogFile "Process exited but no window detected - TIMEOUT" "INFO"
+            Write-LogFile "Total execution time: ${execTime}ms" "INFO"
+            Write-StructuredOutput -Status "TIMEOUT" -Message "Script exited but no window was detected" -TrayIcon $trayStatus -ExecutionTimeMs $execTime -Format $OutputFormat -ScreenshotFile $global:ScreenshotPath
+            exit 0
+        }
     }
     else {
         # Take screenshot if requested

@@ -39,6 +39,6 @@ MenuHandler(ItemName, ItemPos, MyMenu) {
 
 ; Gestion propre de la fermeture
 OnExit(CleanExit)
-CleanExit(*) {
+CleanExit(ExitReason, ExitCode) {
     ExitApp()
 }
