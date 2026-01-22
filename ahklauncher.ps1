@@ -33,8 +33,9 @@
 )
 
 # AHK Launcher PowerShell - Script Validation AutoHotkey avec Extraction Erreurs
-# Version: 1.8.2 - Handle scripts that launch child processes
+# Version: 1.8.3 - Auto-detect AHK version from #Requires directive
 # Objectif: Validation rapide scripts AHK + extraction erreurs intelligente via APIs Windows
+# v1.8.3: Read #Requires AutoHotkey directive to auto-detect V1/V2 (fixes V1 being used for V2 scripts)
 # v1.8.2: Handle scripts that exit with code 0 (spawning child processes) - immediate SUCCESS
 # v1.8.1: -OutputFile parameter to write JSON to file (avoids pipe inheritance issues with MCP)
 # v1.8: Early exit for persistent scripts (2s stable = RUNNING status)
@@ -429,18 +430,59 @@ function Get-ProcessWindows {
     }
 }
 
+function Get-ScriptRequiredVersion {
+    param([string]$ScriptPath)
+
+    # v1.8.3: Read script content to detect #Requires directive
+    try {
+        if (-not (Test-Path $ScriptPath)) { return "Auto" }
+
+        # Read first 50 lines (directives are usually at the top)
+        $content = Get-Content $ScriptPath -TotalCount 50 -ErrorAction SilentlyContinue
+        if (-not $content) { return "Auto" }
+
+        foreach ($line in $content) {
+            # Match #Requires AutoHotkey v2.0 or similar
+            if ($line -match '^\s*#Requires\s+AutoHotkey\s+v?2') {
+                Write-Verbose "Detected #Requires AutoHotkey v2 in script"
+                return "V2"
+            }
+            elseif ($line -match '^\s*#Requires\s+AutoHotkey\s+v?1') {
+                Write-Verbose "Detected #Requires AutoHotkey v1 in script"
+                return "V1"
+            }
+        }
+
+        return "Auto"
+    }
+    catch {
+        Write-Verbose "Error reading script for version detection: $($_.Exception.Message)"
+        return "Auto"
+    }
+}
+
 function Test-AutohotkeyAvailable {
     param(
         [string]$CustomPath = "",
-        [string]$PreferredVersion = "Auto"
+        [string]$PreferredVersion = "Auto",
+        [string]$ScriptPath = ""  # v1.8.3: Pass script path for content-based detection
     )
-    
+
+    # v1.8.3: If Auto, try to detect version from script content first
+    if ($PreferredVersion -eq "Auto" -and $ScriptPath) {
+        $detectedVersion = Get-ScriptRequiredVersion -ScriptPath $ScriptPath
+        if ($detectedVersion -ne "Auto") {
+            Write-Verbose "Script requires AHK $detectedVersion - using that version"
+            $PreferredVersion = $detectedVersion
+        }
+    }
+
     # Si un chemin custom est specifie, l'utiliser en priorite
     if ($CustomPath -and (Test-Path $CustomPath)) {
         return $CustomPath
     }
-    
-    # 1. Recherche dans PATH systeme (standard)
+
+    # 1. Recherche dans PATH systeme (standard) - only if no specific version required
     try {
         $ahkCommand = Get-Command "AutoHotkey.exe" -ErrorAction SilentlyContinue
         if ($ahkCommand -and $PreferredVersion -eq "Auto") {
@@ -942,9 +984,10 @@ try {
 
     $ScriptPath = Resolve-Path $ScriptPath
     Write-Verbose "Resolved script path: $ScriptPath"
-    Write-LogFile "Resolved script path: $ScriptPath" "INFO"    
+    Write-LogFile "Resolved script path: $ScriptPath" "INFO"
     # 2. DETECTION AUTOHOTKEY
-    $ahkExecutable = Test-AutohotkeyAvailable -CustomPath $AhkExecutable -PreferredVersion $AhkVersion
+    # v1.8.3: Pass ScriptPath for content-based version detection (#Requires directive)
+    $ahkExecutable = Test-AutohotkeyAvailable -CustomPath $AhkExecutable -PreferredVersion $AhkVersion -ScriptPath $ScriptPath
     if (-not $ahkExecutable) {
         Write-LogFile "AutoHotkey executable not found" "ERROR"
         Write-StructuredOutput -Status "ERROR" -Message "AutoHotkey executable not found in PATH, portable locations, or custom path" -Format $OutputFormat
